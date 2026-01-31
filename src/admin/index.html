@@ -1,0 +1,1282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Code Search Admin</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html, body {
+            height: 100%;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .container {
+            max-width: 1400px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-height: 0;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #333;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: #2d2d44;
+            border-radius: 20px;
+            font-size: 14px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #4ade80;
+        }
+
+        .status-dot.error {
+            background: #f87171;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 20px;
+            background: #2d2d44;
+            padding: 4px;
+            border-radius: 8px;
+            width: fit-content;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: transparent;
+            border: none;
+            color: #999;
+            cursor: pointer;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .tab:hover {
+            color: #eee;
+        }
+
+        .tab.active {
+            background: #4f46e5;
+            color: white;
+        }
+
+        .tab-content {
+            display: none;
+            flex-direction: column;
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        .tab-content.active {
+            display: flex;
+        }
+
+        .card {
+            background: #2d2d44;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .tab-content > .card {
+            flex: 1;
+            margin-bottom: 0;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            flex-shrink: 0;
+        }
+
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .folder-path {
+            font-size: 12px;
+            color: #888;
+            font-family: monospace;
+        }
+
+        .progress-bar-container {
+            background: #1a1a2e;
+            border-radius: 4px;
+            height: 8px;
+            overflow: hidden;
+            margin: 12px 0;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4f46e5, #7c3aed);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .progress-stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: #999;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 12px;
+            background: #1a1a2e;
+            border-radius: 8px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #4f46e5;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        .query-list {
+            flex: 1;
+            overflow-y: auto;
+            min-height: 0;
+        }
+
+        .query-item {
+            padding: 12px;
+            background: #1a1a2e;
+            border-radius: 8px;
+            margin-bottom: 8px;
+        }
+
+        .query-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            cursor: pointer;
+        }
+
+        .query-header:hover {
+            opacity: 0.9;
+        }
+
+        .query-text {
+            font-family: monospace;
+            font-size: 13px;
+            color: #eee;
+            flex: 1;
+            word-break: break-word;
+        }
+
+        .query-meta {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 4px;
+            margin-left: 16px;
+            font-size: 11px;
+            color: #888;
+            white-space: nowrap;
+        }
+
+        .query-results-count {
+            color: #4ade80;
+        }
+
+        .query-time {
+            color: #facc15;
+        }
+
+        .query-results-list {
+            display: none;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #333;
+        }
+
+        .query-results-list.expanded {
+            display: block;
+        }
+
+        .query-result-item {
+            padding: 10px;
+            background: #2d2d44;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+
+        .query-result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .query-result-file {
+            font-family: monospace;
+            color: #93c5fd;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .query-result-lines {
+            color: #888;
+            margin-left: 12px;
+        }
+
+        .query-result-score {
+            color: #4ade80;
+            margin-left: 12px;
+            font-weight: 500;
+        }
+
+        .query-result-code {
+            background: #1a1a2e;
+            border-radius: 4px;
+            padding: 8px;
+            font-family: monospace;
+            font-size: 11px;
+            color: #ccc;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 150px;
+            overflow-y: auto;
+            border-left: 3px solid #4f46e5;
+        }
+
+        .expand-icon {
+            margin-right: 8px;
+            transition: transform 0.2s;
+        }
+
+        .query-item.expanded .expand-icon {
+            transform: rotate(90deg);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .badge.pending {
+            background: #fbbf24;
+            color: #000;
+        }
+
+        .badge.indexing {
+            background: #3b82f6;
+            color: #fff;
+        }
+
+        .badge.indexed {
+            background: #4ade80;
+            color: #000;
+        }
+
+        .badge.error {
+            background: #f87171;
+            color: #000;
+        }
+
+        .badge.paused {
+            background: #888;
+            color: #fff;
+        }
+
+        .content-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #888;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .refresh-btn {
+            background: #4f46e5;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .refresh-btn:hover {
+            background: #4338ca;
+        }
+
+        .refresh-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .limit-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #999;
+        }
+
+        .limit-control select {
+            background: #1a1a2e;
+            color: #eee;
+            border: 1px solid #444;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .limit-control select:focus {
+            outline: none;
+            border-color: #4f46e5;
+        }
+
+        .auto-refresh-control {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            background: #2d2d44;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .auto-refresh-control label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #eee;
+            cursor: pointer;
+        }
+
+        .auto-refresh-control input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #4f46e5;
+        }
+
+        .auto-refresh-control select {
+            background: #1a1a2e;
+            color: #eee;
+            border: 1px solid #444;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .auto-refresh-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #888;
+        }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #4ade80;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        .pulse-dot.paused {
+            background: #888;
+            animation: none;
+        }
+
+        .service-card {
+            background: #2d2d44;
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .service-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .service-name {
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .service-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+        }
+
+        .service-status .status-dot {
+            width: 8px;
+            height: 8px;
+        }
+
+        .service-status.running {
+            color: #4ade80;
+        }
+
+        .service-status.stopped {
+            color: #f87171;
+        }
+
+        .service-details {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 12px;
+        }
+
+        .service-details div {
+            margin-bottom: 4px;
+        }
+
+        .service-models {
+            font-size: 11px;
+            color: #666;
+            background: #1a1a2e;
+            padding: 8px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            max-height: 60px;
+            overflow-y: auto;
+        }
+
+        .service-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .service-btn {
+            flex: 1;
+            padding: 8px 12px;
+            border: none;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .service-btn.start {
+            background: #4ade80;
+            color: #000;
+        }
+
+        .service-btn.start:hover {
+            background: #22c55e;
+        }
+
+        .service-btn.stop {
+            background: #f87171;
+            color: #000;
+        }
+
+        .service-btn.stop:hover {
+            background: #ef4444;
+        }
+
+        .service-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .service-btn.loading {
+            position: relative;
+            color: transparent;
+        }
+
+        .service-btn.loading::after {
+            content: "";
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            top: 50%;
+            left: 50%;
+            margin-left: -7px;
+            margin-top: -7px;
+            border: 2px solid #000;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .current-file {
+            font-size: 12px;
+            color: #888;
+            font-family: monospace;
+            margin-top: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .indexing .progress-bar {
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        .no-folders {
+            text-align: center;
+            padding: 60px 20px;
+            color: #888;
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1a1a2e;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #4f46e5;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Code Search Admin</h1>
+            <div style="display: flex; gap: 12px;">
+                <div class="status-badge" title="Server connection status">
+                    <span class="status-dot" id="serverStatus"></span>
+                    <span id="serverStatusText">Connected</span>
+                </div>
+                <div class="status-badge" id="ollamaStatusBadge" title="Click for details" style="cursor: pointer;" onclick="switchToServicesTab()">
+                    <span class="status-dot" id="ollamaStatusDot"></span>
+                    <span>Ollama: <span id="ollamaStatusBadgeText">...</span></span>
+                </div>
+            </div>
+        </header>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="queries">Queries</button>
+            <button class="tab" data-tab="ingestion">Ingestion Progress</button>
+            <button class="tab" data-tab="services">Services</button>
+        </div>
+
+        <div class="auto-refresh-control">
+            <label>
+                <input type="checkbox" id="autoRefreshToggle" checked onchange="toggleAutoRefresh()">
+                Auto-refresh
+            </label>
+            <select id="refreshInterval" onchange="updateRefreshInterval()">
+                <option value="2000">Every 2s</option>
+                <option value="5000" selected>Every 5s</option>
+                <option value="10000">Every 10s</option>
+                <option value="30000">Every 30s</option>
+            </select>
+            <div class="auto-refresh-indicator">
+                <span class="pulse-dot" id="refreshIndicator"></span>
+                <span id="refreshStatus">Auto-refreshing</span>
+            </div>
+        </div>
+
+        <div id="queriesTab" class="tab-content active">
+            <div class="card-header">
+                <div style="display: flex; gap: 16px; align-items: center;">
+                    <div class="limit-control">
+                        <label for="queriesView">View:</label>
+                        <select id="queriesView" onchange="refreshQueries()">
+                            <option value="timeline" selected>Timeline (All)</option>
+                            <option value="folder">By Folder</option>
+                        </select>
+                    </div>
+                    <div class="limit-control">
+                        <label for="queriesLimit">Limit:</label>
+                        <select id="queriesLimit" onchange="refreshQueries()">
+                            <option value="25">25</option>
+                            <option value="50">50</option>
+                            <option value="100" selected>100</option>
+                        </select>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <button class="refresh-btn" onclick="refreshQueries()">
+                        <span>&#8635;</span> Refresh
+                    </button>
+                    <button class="refresh-btn" style="background: #dc2626;" onclick="clearQueryLogs()">
+                        <span>&#128465;</span> Clear Logs
+                    </button>
+                </div>
+            </div>
+            <div id="queriesContent" class="content-area"></div>
+        </div>
+
+        <div id="ingestionTab" class="tab-content">
+            <div class="card-header">
+                <div></div>
+                <button class="refresh-btn" onclick="refreshIngestion()">
+                    <span>&#8635;</span> Refresh
+                </button>
+            </div>
+            <div id="ingestionContent" class="content-area"></div>
+        </div>
+
+        <div id="servicesTab" class="tab-content">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span>&#129302;</span> Ollama Embedding Service
+                    </div>
+                    <div class="service-status stopped" id="ollamaStatus">
+                        <span class="status-dot"></span>
+                        <span id="ollamaStatusText">Checking...</span>
+                    </div>
+                </div>
+
+                <div class="stats-grid" style="margin-bottom: 20px;">
+                    <div class="stat-item">
+                        <div class="stat-value" id="ollamaUrl" style="font-size: 14px; word-break: break-all;">-</div>
+                        <div class="stat-label">Base URL</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="ollamaModel" style="font-size: 14px;">-</div>
+                        <div class="stat-label">Configured Model</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="ollamaModelCount" style="font-size: 14px;">-</div>
+                        <div class="stat-label">Available Models</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="ollamaManagedStatus" style="font-size: 14px;">-</div>
+                        <div class="stat-label">Managed By Server</div>
+                    </div>
+                </div>
+
+                <div class="service-models" id="ollamaModels" style="margin-bottom: 16px;">
+                    No models loaded
+                </div>
+
+                <div class="service-actions">
+                    <button class="service-btn start" id="ollamaStartBtn" onclick="startOllama()">Start Ollama</button>
+                    <button class="service-btn stop" id="ollamaStopBtn" onclick="stopOllama()" disabled>Stop Ollama</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+                tab.classList.add('active');
+                document.getElementById(tab.dataset.tab + 'Tab').classList.add('active');
+            });
+        });
+
+        // Format timestamp
+        function formatTime(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleString();
+        }
+
+        // Format relative time
+        function formatRelativeTime(timestamp) {
+            const now = Date.now();
+            const diff = now - timestamp;
+
+            if (diff < 60000) return 'just now';
+            if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+            if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+            return `${Math.floor(diff / 86400000)}d ago`;
+        }
+
+        // Fetch queries
+        async function refreshQueries() {
+            const content = document.getElementById('queriesContent');
+            content.innerHTML = '<div class="empty-state">Loading...</div>';
+
+            try {
+                const limit = document.getElementById('queriesLimit').value;
+                const viewMode = document.getElementById('queriesView').value;
+                const response = await fetch(`/api/admin/queries?limit=${limit}`);
+                const data = await response.json();
+
+                // Helper to render a query item with expandable results
+                const renderQueryItem = (q, showFolder = false) => {
+                    const hasResults = q.results && q.results.length > 0;
+                    const resultsHtml = hasResults ? `
+                        <div class="query-results-list" id="results-${q.id}">
+                            ${q.results.map(r => `
+                                <div class="query-result-item">
+                                    <div class="query-result-header">
+                                        <span class="query-result-file" title="${escapeHtml(r.filePath)}">${escapeHtml(r.filePath)}</span>
+                                        <span class="query-result-lines">L${r.startLine}-${r.endLine}</span>
+                                        <span class="query-result-score">${(r.score * 100).toFixed(1)}%</span>
+                                    </div>
+                                    ${r.codeSnippet ? `<div class="query-result-code">${escapeHtml(r.codeSnippet)}</div>` : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                    ` : '';
+
+                    const folderBadge = showFolder && q.folderName ?
+                        `<span class="badge indexed" style="margin-right: 8px;">${escapeHtml(q.folderName)}</span>` :
+                        (showFolder && !q.folderName ? '<span class="badge" style="background: #666; margin-right: 8px;">Global</span>' : '');
+
+                    return `
+                        <div class="query-item" id="query-${q.id}" onclick="toggleQueryResults('${q.id}')">
+                            <div class="query-header">
+                                <div class="query-text">
+                                    ${hasResults ? '<span class="expand-icon">&#9654;</span>' : ''}
+                                    ${escapeHtml(q.query)}
+                                </div>
+                                <div class="query-meta">
+                                    ${folderBadge}
+                                    <span class="query-results-count">${q.resultsCount} results</span>
+                                    <span class="query-time">${q.executionTimeMs}ms</span>
+                                    <span title="${formatTime(q.timestamp)}">${formatRelativeTime(q.timestamp)}</span>
+                                </div>
+                            </div>
+                            ${resultsHtml}
+                        </div>
+                    `;
+                };
+
+                let html = '';
+
+                if (viewMode === 'timeline') {
+                    // Collect all queries into a single array with folder info
+                    let allQueries = [];
+
+                    // Add global queries
+                    if (data.globalQueries) {
+                        allQueries.push(...data.globalQueries.map(q => ({ ...q, folderName: null })));
+                    }
+
+                    // Add folder queries
+                    for (const folder of data.folders) {
+                        allQueries.push(...folder.queries.map(q => ({ ...q, folderName: folder.name })));
+                    }
+
+                    // Sort by timestamp descending
+                    allQueries.sort((a, b) => b.timestamp - a.timestamp);
+
+                    // Apply limit
+                    allQueries = allQueries.slice(0, parseInt(limit));
+
+                    if (allQueries.length === 0) {
+                        html = `
+                            <div class="empty-state">
+                                <div class="empty-state-icon">&#128269;</div>
+                                <p>No queries recorded yet</p>
+                            </div>
+                        `;
+                    } else {
+                        html = `
+                            <div class="card">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <span>&#128337;</span> All Queries (${allQueries.length})
+                                    </div>
+                                </div>
+                                <div class="query-list">
+                                    ${allQueries.map(q => renderQueryItem(q, true)).join('')}
+                                </div>
+                            </div>
+                        `;
+                    }
+                } else {
+                    // Folder view (original)
+                    if (!data.folders || (data.folders.length === 0 && (!data.globalQueries || data.globalQueries.length === 0))) {
+                        html = `
+                            <div class="empty-state">
+                                <div class="empty-state-icon">&#128269;</div>
+                                <p>No queries recorded yet</p>
+                            </div>
+                        `;
+                    } else {
+                        if (data.globalQueries && data.globalQueries.length > 0) {
+                            html += `
+                                <div class="card">
+                                    <div class="card-header">
+                                        <div class="card-title">
+                                            <span>&#127760;</span> Global Queries
+                                        </div>
+                                        <span class="badge indexed">${data.globalQueries.length} queries</span>
+                                    </div>
+                                    <div class="query-list">
+                                        ${data.globalQueries.map(q => renderQueryItem(q, false)).join('')}
+                                    </div>
+                                </div>
+                            `;
+                        }
+
+                        for (const folder of data.folders) {
+                            if (folder.queries.length === 0) continue;
+
+                            html += `
+                                <div class="card">
+                                    <div class="card-header">
+                                        <div>
+                                            <div class="card-title">
+                                                <span>&#128193;</span> ${escapeHtml(folder.name)}
+                                            </div>
+                                            <div class="folder-path">${escapeHtml(folder.path)}</div>
+                                        </div>
+                                        <span class="badge indexed">${folder.queries.length} queries</span>
+                                    </div>
+                                    <div class="query-list">
+                                        ${folder.queries.map(q => renderQueryItem(q, false)).join('')}
+                                    </div>
+                                </div>
+                            `;
+                        }
+
+                        if (!html) {
+                            html = `
+                                <div class="empty-state">
+                                    <div class="empty-state-icon">&#128269;</div>
+                                    <p>No queries recorded yet</p>
+                                </div>
+                            `;
+                        }
+                    }
+                }
+
+                content.innerHTML = html;
+            } catch (error) {
+                content.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">&#9888;</div>
+                        <p>Failed to load queries: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        // Fetch ingestion progress
+        async function refreshIngestion() {
+            const content = document.getElementById('ingestionContent');
+            content.innerHTML = '<div class="empty-state">Loading...</div>';
+
+            try {
+                const response = await fetch('/api/admin/ingestion');
+                const data = await response.json();
+
+                if (!data.folders || data.folders.length === 0) {
+                    content.innerHTML = `
+                        <div class="no-folders">
+                            <div class="empty-state-icon">&#128193;</div>
+                            <p>No folders are being tracked</p>
+                            <p style="margin-top: 8px; font-size: 13px;">Use the add_folder tool to start indexing a folder</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                let html = '';
+
+                for (const folder of data.folders) {
+                    const progress = folder.progress;
+                    const percent = progress.totalFiles > 0
+                        ? Math.round((progress.processedFiles / progress.totalFiles) * 100)
+                        : 0;
+
+                    const isIndexing = folder.status === 'indexing';
+
+                    html += `
+                        <div class="card ${isIndexing ? 'indexing' : ''}">
+                            <div class="card-header">
+                                <div>
+                                    <div class="card-title">
+                                        <span>&#128193;</span> ${escapeHtml(folder.name)}
+                                    </div>
+                                    <div class="folder-path">${escapeHtml(folder.path)}</div>
+                                </div>
+                                <span class="badge ${folder.status}">${folder.status}</span>
+                            </div>
+
+                            <div class="progress-bar-container">
+                                <div class="progress-bar" style="width: ${percent}%"></div>
+                            </div>
+
+                            <div class="progress-stats">
+                                <span>${progress.processedFiles} / ${progress.totalFiles} files</span>
+                                <span>${percent}%</span>
+                            </div>
+
+                            ${progress.currentFile ? `
+                                <div class="current-file">
+                                    Current: ${escapeHtml(progress.currentFile)}
+                                </div>
+                            ` : ''}
+
+                            <div class="stats-grid">
+                                <div class="stat-item">
+                                    <div class="stat-value">${progress.indexedBlocks}</div>
+                                    <div class="stat-label">Blocks Indexed</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value">${folder.fileCount || 0}</div>
+                                    <div class="stat-label">Total Files</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value">${folder.errorCount || 0}</div>
+                                    <div class="stat-label">Errors</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value">${progress.startTime ? formatDuration(progress.startTime, progress.endTime) : '-'}</div>
+                                    <div class="stat-label">Duration</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                content.innerHTML = html;
+            } catch (error) {
+                content.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">&#9888;</div>
+                        <p>Failed to load ingestion status: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        function formatDuration(startTime, endTime) {
+            const end = endTime || Date.now();
+            const durationMs = end - startTime;
+
+            if (durationMs < 1000) return `${durationMs}ms`;
+            if (durationMs < 60000) return `${(durationMs / 1000).toFixed(1)}s`;
+            if (durationMs < 3600000) return `${Math.floor(durationMs / 60000)}m ${Math.floor((durationMs % 60000) / 1000)}s`;
+            return `${Math.floor(durationMs / 3600000)}h ${Math.floor((durationMs % 3600000) / 60000)}m`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function toggleQueryResults(queryId) {
+            const queryItem = document.getElementById(`query-${queryId}`);
+            const resultsList = document.getElementById(`results-${queryId}`);
+
+            if (queryItem && resultsList) {
+                queryItem.classList.toggle('expanded');
+                resultsList.classList.toggle('expanded');
+            }
+        }
+
+        async function clearQueryLogs() {
+            if (!confirm('Are you sure you want to clear all query logs?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/admin/queries', { method: 'DELETE' });
+                const data = await response.json();
+
+                if (data.success) {
+                    refreshQueries();
+                } else {
+                    alert('Failed to clear logs: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to clear logs: ' + error.message);
+            }
+        }
+
+        // Check server health
+        async function checkHealth() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+
+                document.getElementById('serverStatus').classList.remove('error');
+                document.getElementById('serverStatusText').textContent = 'Connected';
+            } catch (error) {
+                document.getElementById('serverStatus').classList.add('error');
+                document.getElementById('serverStatusText').textContent = 'Disconnected';
+            }
+        }
+
+        // Auto-refresh
+        let refreshIntervalId = null;
+        let isAutoRefreshEnabled = true;
+
+        function getRefreshInterval() {
+            return parseInt(document.getElementById('refreshInterval').value) || 5000;
+        }
+
+        function startAutoRefresh() {
+            if (refreshIntervalId) {
+                clearInterval(refreshIntervalId);
+            }
+
+            if (!isAutoRefreshEnabled) return;
+
+            refreshIntervalId = setInterval(() => {
+                const activeTab = document.querySelector('.tab.active').dataset.tab;
+                if (activeTab === 'queries') {
+                    refreshQueries();
+                } else {
+                    refreshIngestion();
+                }
+                checkHealth();
+                checkOllamaStatus();
+            }, getRefreshInterval());
+        }
+
+        function toggleAutoRefresh() {
+            isAutoRefreshEnabled = document.getElementById('autoRefreshToggle').checked;
+            const indicator = document.getElementById('refreshIndicator');
+            const status = document.getElementById('refreshStatus');
+
+            if (isAutoRefreshEnabled) {
+                indicator.classList.remove('paused');
+                status.textContent = 'Auto-refreshing';
+                startAutoRefresh();
+            } else {
+                indicator.classList.add('paused');
+                status.textContent = 'Paused';
+                if (refreshIntervalId) {
+                    clearInterval(refreshIntervalId);
+                    refreshIntervalId = null;
+                }
+            }
+        }
+
+        function updateRefreshInterval() {
+            if (isAutoRefreshEnabled) {
+                startAutoRefresh();
+            }
+        }
+
+        // Switch to services tab
+        function switchToServicesTab() {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelector('.tab[data-tab="services"]').classList.add('active');
+            document.getElementById('servicesTab').classList.add('active');
+        }
+
+        // Ollama status check
+        async function checkOllamaStatus() {
+            try {
+                const response = await fetch('/api/admin/ollama/status');
+                const data = await response.json();
+
+                // Update header badge
+                const badgeDot = document.getElementById('ollamaStatusDot');
+                const badgeText = document.getElementById('ollamaStatusBadgeText');
+
+                // Update services tab details
+                const statusEl = document.getElementById('ollamaStatus');
+                const statusText = document.getElementById('ollamaStatusText');
+                const urlEl = document.getElementById('ollamaUrl');
+                const modelEl = document.getElementById('ollamaModel');
+                const modelCountEl = document.getElementById('ollamaModelCount');
+                const managedEl = document.getElementById('ollamaManagedStatus');
+                const modelsEl = document.getElementById('ollamaModels');
+                const startBtn = document.getElementById('ollamaStartBtn');
+                const stopBtn = document.getElementById('ollamaStopBtn');
+
+                urlEl.textContent = data.baseUrl || '-';
+                modelEl.textContent = data.configuredModel || '-';
+                managedEl.textContent = data.managedByServer ? 'Yes' : 'No';
+
+                if (data.running) {
+                    // Header badge
+                    badgeDot.classList.remove('error');
+                    badgeText.textContent = 'Running';
+
+                    // Services tab
+                    statusEl.className = 'service-status running';
+                    statusText.textContent = 'Running';
+                    startBtn.disabled = true;
+                    stopBtn.disabled = !data.managedByServer;
+
+                    if (data.models && data.models.length > 0) {
+                        modelCountEl.textContent = data.models.length;
+                        modelsEl.innerHTML = data.models.map(m => `<div style="padding: 4px 0; border-bottom: 1px solid #333;">• ${escapeHtml(m)}</div>`).join('');
+                    } else {
+                        modelCountEl.textContent = '0';
+                        modelsEl.textContent = 'No models found. Run: ollama pull nomic-embed-text';
+                    }
+                } else {
+                    // Header badge
+                    badgeDot.classList.add('error');
+                    badgeText.textContent = 'Stopped';
+
+                    // Services tab
+                    statusEl.className = 'service-status stopped';
+                    statusText.textContent = 'Stopped';
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true;
+                    modelCountEl.textContent = '-';
+                    modelsEl.textContent = data.error ? `Error: ${data.error}` : 'Service not running';
+                }
+            } catch (error) {
+                document.getElementById('ollamaStatusBadgeText').textContent = 'Error';
+                document.getElementById('ollamaStatusDot').classList.add('error');
+                document.getElementById('ollamaStatusText').textContent = 'Error';
+                document.getElementById('ollamaModels').textContent = `Failed to check: ${error.message}`;
+            }
+        }
+
+        async function startOllama() {
+            const btn = document.getElementById('ollamaStartBtn');
+            btn.classList.add('loading');
+            btn.disabled = true;
+
+            try {
+                const response = await fetch('/api/admin/ollama/start', { method: 'POST' });
+                const data = await response.json();
+
+                if (!data.success) {
+                    alert('Failed to start Ollama: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to start Ollama: ' + error.message);
+            } finally {
+                btn.classList.remove('loading');
+                await checkOllamaStatus();
+            }
+        }
+
+        async function stopOllama() {
+            const btn = document.getElementById('ollamaStopBtn');
+            btn.classList.add('loading');
+            btn.disabled = true;
+
+            try {
+                const response = await fetch('/api/admin/ollama/stop', { method: 'POST' });
+                const data = await response.json();
+
+                if (!data.success) {
+                    alert('Failed to stop Ollama: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to stop Ollama: ' + error.message);
+            } finally {
+                btn.classList.remove('loading');
+                await checkOllamaStatus();
+            }
+        }
+
+        // Initial load
+        refreshQueries();
+        refreshIngestion();
+        checkHealth();
+        checkOllamaStatus();
+        startAutoRefresh();
+    </script>
+</body>
+</html>

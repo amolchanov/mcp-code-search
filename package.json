@@ -1,0 +1,38 @@
+{
+  "name": "code-search-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for semantic code search using vector embeddings",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "bin": {
+    "code-search-mcp": "dist/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc && npm run copy-admin",
+    "copy-admin": "node -e \"const fs = require('fs'); fs.mkdirSync('dist/admin', { recursive: true }); fs.copyFileSync('src/admin/index.html', 'dist/admin/index.html');\"",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "download-wasm": "node scripts/download-wasm.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.500.0",
+    "@aws-sdk/credential-providers": "^3.500.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@qdrant/js-client-rest": "^1.7.0",
+    "chokidar": "^3.5.3",
+    "express": "^5.2.1",
+    "ignore": "^5.3.0",
+    "openai": "^4.0.0",
+    "systray2": "^2.1.4",
+    "uuid": "^9.0.0",
+    "web-tree-sitter": "^0.20.8",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^20.0.0",
+    "@types/uuid": "^9.0.0",
+    "typescript": "^5.3.0"
+  }
+}
