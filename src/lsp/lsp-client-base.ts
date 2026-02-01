@@ -114,6 +114,38 @@ export abstract class LSPClientBase implements ILSPClient {
 				}
 			})
 
+			// Register handlers for server-to-client requests/notifications
+			// These are required by various LSP servers (especially csharp-ls)
+
+			// Progress token creation (required by csharp-ls)
+			this.connection.onRequest("window/workDoneProgress/create", () => null)
+
+			// Capability registration (required by many servers)
+			this.connection.onRequest("client/registerCapability", () => null)
+			this.connection.onRequest("client/unregisterCapability", () => null)
+
+			// Configuration requests (required by csharp-ls)
+			this.connection.onRequest("workspace/configuration", (params: { items: Array<{ section?: string }> }) => {
+				return params.items.map(() => ({}))
+			})
+
+			// Workspace folder requests
+			this.connection.onRequest("workspace/workspaceFolders", () => {
+				return [{ uri: pathToFileURL(rootPath).toString(), name: path.basename(rootPath) }]
+			})
+
+			// Apply workspace edit (for refactoring - just accept)
+			this.connection.onRequest("workspace/applyEdit", () => ({ applied: true }))
+
+			// Show message request (just acknowledge)
+			this.connection.onRequest("window/showMessageRequest", () => null)
+
+			// Notifications we can ignore but need to handle
+			this.connection.onNotification("window/showMessage", () => {})
+			this.connection.onNotification("window/logMessage", () => {})
+			this.connection.onNotification("telemetry/event", () => {})
+			this.connection.onNotification("$/progress", () => {})
+
 			// Start listening
 			this.connection.listen()
 

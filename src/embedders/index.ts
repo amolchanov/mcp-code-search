@@ -31,8 +31,17 @@ export function createEmbedder(config: ServerConfig): IEmbedder {
 			}
 			return new OpenAiEmbedder(config.openAiApiKey, config.modelId)
 
-		case "ollama":
-			return new OllamaEmbedder(config.ollamaBaseUrl, config.modelId)
+		case "ollama": {
+			// Get context size for the model from config
+			const modelId = config.modelId || "nomic-embed-text"
+			const contextSizes = config.modelContextSizes || {}
+			// Look up context size - try exact match, then without :latest suffix
+			const maxContextTokens = contextSizes[modelId]
+				|| contextSizes[modelId.replace(":latest", "")]
+				|| contextSizes[modelId.split(":")[0]]
+				|| 8192
+			return new OllamaEmbedder(config.ollamaBaseUrl, config.modelId, maxContextTokens)
+		}
 
 		case "openai-compatible":
 			if (!config.openAiCompatibleBaseUrl || !config.openAiCompatibleApiKey) {

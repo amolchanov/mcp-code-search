@@ -28,6 +28,10 @@ export interface LSPOptions {
 	useOmniSharp?: boolean
 }
 
+export interface IndexingOptions {
+	parsingConcurrency?: number
+}
+
 export class FolderIndexer {
 	private status: FolderStatus = "pending"
 	private fileWatcher: FileWatcher | null = null
@@ -37,6 +41,7 @@ export class FolderIndexer {
 	private scanner: DirectoryScanner | null = null
 	private errors: IndexingError[] = []
 	private progress: FolderProgress
+	private _isPaused: boolean = false
 
 	// LSP components
 	private lspServerManager: LSPServerManager | null = null
@@ -51,7 +56,8 @@ export class FolderIndexer {
 		private readonly callbacks?: FolderIndexerCallbacks,
 		private readonly fileWatcherOptions?: FileWatcherOptions,
 		private readonly modelId?: string,
-		private readonly lspOptions?: LSPOptions
+		private readonly lspOptions?: LSPOptions,
+		private readonly indexingOptions?: IndexingOptions
 	) {
 		this.cacheManager = new FileCacheManager(folder.id)
 		// Use modelId or embedder info for cache key
@@ -96,6 +102,40 @@ export class FolderIndexer {
 		return this.lspEnricher.getStatus()
 	}
 
+	get lspStats(): {
+		filesProcessed: number
+		filesSkippedUnavailable: number
+		filesSkippedUnsupported: number
+		filesWithErrors: number
+		blocksProcessed: number
+		blocksEnriched: number
+		blocksNoData: number
+		blocksFromCache: number
+	} | null {
+		if (!this.lspEnricher) return null
+		return this.lspEnricher.getStats()
+	}
+
+	get isPaused(): boolean {
+		return this._isPaused
+	}
+
+	pause(): void {
+		if (this.status === "indexing" && !this._isPaused) {
+			this._isPaused = true
+			this.setStatus("paused")
+			console.log(`[${this.folder.name}] Indexing paused`)
+		}
+	}
+
+	resume(): void {
+		if (this._isPaused) {
+			this._isPaused = false
+			this.setStatus("indexing")
+			console.log(`[${this.folder.name}] Indexing resumed`)
+		}
+	}
+
 	private setStatus(status: FolderStatus): void {
 		this.status = status
 		this.progress.status = status
@@ -125,8 +165,15 @@ export class FolderIndexer {
 		await this.cacheManager.initialize()
 		await this.embeddingCache.initialize()
 
+		// Determine if LSP should be enabled for this folder
+		// Per-folder setting takes precedence over global setting
+		// undefined = use global setting (which defaults to enabled)
+		const lspEnabledForFolder = this.folder.lspEnabled !== undefined
+			? this.folder.lspEnabled
+			: this.lspOptions?.enabled ?? true
+
 		// Initialize LSP components if enabled
-		if (this.lspOptions?.enabled) {
+		if (lspEnabledForFolder && this.lspOptions) {
 			try {
 				this.lspServerManager = new LSPServerManager({
 					useOmniSharp: this.lspOptions.useOmniSharp,
@@ -146,6 +193,8 @@ export class FolderIndexer {
 				this.lspCache = null
 				this.lspEnricher = null
 			}
+		} else if (this.folder.lspEnabled === false) {
+			console.log(`[${this.folder.name}] LSP enrichment disabled (per-folder setting)`)
 		}
 	}
 
@@ -166,7 +215,9 @@ export class FolderIndexer {
 				this.codeParser,
 				this.cacheManager,
 				this.embeddingCache,
-				this.lspEnricher ?? undefined
+				this.lspEnricher ?? undefined,
+				undefined, // batchSegmentThreshold - use default
+				this.indexingOptions?.parsingConcurrency
 			)
 
 			const result = await this.scanner.scanDirectory({
@@ -187,6 +238,7 @@ export class FolderIndexer {
 					this.progress.currentFile = currentFile
 					this.callbacks?.onProgress?.(this.progress)
 				},
+				isPaused: () => this._isPaused,
 			})
 
 			await this.vectorStore.markIndexingComplete(this.folder.id)
@@ -199,6 +251,8 @@ export class FolderIndexer {
 				lastIndexedAt: Date.now(),
 				fileCount: result.stats.processed,
 				errorCount: this.errors.length,
+				lastIndexedWithLsp: this.lspEnricher !== null,
+				lastIndexedWithModel: this.modelId,
 			})
 
 			return result
@@ -281,6 +335,85 @@ export class FolderIndexer {
 		} catch (error) {
 			console.error(`Error clearing index for folder ${this.folder.path}:`, error)
 			this.setStatus("error")
+			throw error
+		}
+	}
+
+	/**
+	 * Re-enrich all files without clearing the index.
+	 * This clears the file hash cache so all files are re-processed,
+	 * but keeps existing embeddings searchable until replaced.
+	 */
+	async reEnrich(): Promise<ScanResult> {
+		this.setStatus("indexing")
+		this.progress.startTime = Date.now()
+		this.progress.processedFiles = 0
+		this.progress.indexedBlocks = 0
+
+		console.log(`[${this.folder.name}] Starting re-enrichment (keeping index live)`)
+
+		try {
+			// Clear only the file hash cache - not the vector store
+			// This forces all files to be re-processed
+			await this.cacheManager.clearCacheFile()
+
+			this.scanner = new DirectoryScanner(
+				this.folder.id,
+				this.folder.path,
+				this.embedder,
+				this.vectorStore,
+				this.codeParser,
+				this.cacheManager,
+				this.embeddingCache,
+				this.lspEnricher ?? undefined,
+				undefined,
+				this.indexingOptions?.parsingConcurrency
+			)
+
+			const result = await this.scanner.scanDirectory({
+				onError: (error) => {
+					this.addError("", error.message)
+				},
+				onBlocksIndexed: (count) => {
+					this.progress.indexedBlocks += count
+					this.callbacks?.onProgress?.(this.progress)
+				},
+				onFileParsed: (blockCount) => {
+					this.progress.processedFiles++
+					this.callbacks?.onProgress?.(this.progress)
+				},
+				onProgress: (processed, total, currentFile) => {
+					this.progress.processedFiles = processed
+					this.progress.totalFiles = total
+					this.progress.currentFile = currentFile
+					this.callbacks?.onProgress?.(this.progress)
+				},
+				isPaused: () => this._isPaused,
+			})
+
+			this.progress.endTime = Date.now()
+			this.setStatus("indexed")
+
+			await updateFolder(this.folder.id, {
+				lastIndexedAt: Date.now(),
+				fileCount: result.stats.processed,
+				errorCount: this.errors.length,
+				lastIndexedWithLsp: this.lspEnricher !== null,
+				lastIndexedWithModel: this.modelId,
+			})
+
+			console.log(`[${this.folder.name}] Re-enrichment complete: ${result.stats.processed} files processed`)
+			return result
+		} catch (error) {
+			console.error(`Error re-enriching folder ${this.folder.path}:`, error)
+			this.addError("", error instanceof Error ? error.message : String(error))
+			this.setStatus("error")
+
+			await updateFolder(this.folder.id, {
+				lastError: error instanceof Error ? error.message : String(error),
+				errorCount: this.errors.length,
+			})
+
 			throw error
 		}
 	}

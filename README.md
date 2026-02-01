@@ -47,6 +47,69 @@ npm run download-wasm
 npm run build
 ```
 
+## Running the Server
+
+The server can run in two modes:
+
+### Mode 1: Stdio (for CLI integration)
+
+Used when integrating with Claude CLI, Copilot, or other MCP clients:
+
+```bash
+# Run directly (waits for JSON-RPC input on stdin)
+node dist/index.js
+
+# Or with auto-indexing of specific folders
+node dist/index.js --index /path/to/project1 --index /path/to/project2
+```
+
+In stdio mode, the server communicates via stdin/stdout using the MCP protocol. This is what Claude CLI uses when you add it as an MCP server.
+
+### Mode 2: SSE with Admin UI (for web dashboard)
+
+Used for the web-based admin interface:
+
+```bash
+# Start with default port 3100
+node dist/index.js --sse
+
+# Or specify a custom port
+node dist/index.js --sse --port 8080
+
+# With system tray icon (Windows/macOS)
+node dist/index.js --sse --tray
+
+# With auto-indexing
+node dist/index.js --sse --index /path/to/project
+```
+
+Then open: **http://localhost:3100/admin**
+
+### Command Line Options
+
+| Option | Description |
+|--------|-------------|
+| `--sse` | Run in SSE mode with HTTP server and Admin UI |
+| `--port <number>` | HTTP port for SSE mode (default: 3100) |
+| `--tray` | Show system tray icon (SSE mode only) |
+| `--index <path>` | Auto-index a folder on startup (can be repeated) |
+
+### Running Both Modes
+
+You can run both modes simultaneously for different use cases:
+
+```bash
+# Terminal 1: Admin UI for monitoring
+node dist/index.js --sse --port 3100
+
+# Terminal 2: Claude CLI uses stdio mode automatically
+# (configured via 'claude mcp add' command)
+```
+
+**Note:** When Claude CLI spawns the server, it runs in stdio mode. The SSE server is independent and can run alongside for admin/monitoring purposes.
+
+---
+
 ## Running Qdrant
 
 For local development, run Qdrant using Docker:
@@ -73,7 +136,30 @@ ollama pull nomic-embed-text
 
 ### Step 1: Add MCP Server Configuration
 
-Add this to your Claude Code settings file (`~/.claude.json`) for user-wide access:
+**Recommended: Use the Claude CLI command:**
+
+```bash
+# Add to current project (creates .mcp.json in project root)
+claude mcp add code-search -s project -- node /path/to/code-search-mcp/dist/index.js
+
+# Or add globally for all projects (user-level config)
+claude mcp add code-search -s user -- node /path/to/code-search-mcp/dist/index.js
+```
+
+**Windows example:**
+```bash
+claude mcp add code-search -s project -- node C:/repos/code-search-mcp/dist/index.js
+```
+
+**Verify the server is connected:**
+```bash
+claude mcp list
+# Should show: code-search: node ... - ✓ Connected
+```
+
+**Alternative: Manual JSON configuration**
+
+Add to `.mcp.json` in your project root:
 
 ```json
 {
@@ -88,30 +174,22 @@ Add this to your Claude Code settings file (`~/.claude.json`) for user-wide acce
 }
 ```
 
-**Windows example:**
-```json
-{
-  "mcpServers": {
-    "code-search": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["C:/repos/code-search-mcp/dist/index.js"],
-      "env": {}
-    }
-  }
-}
-```
-
-**Or use the CLI:**
-```bash
-claude mcp add --transport stdio code-search -- node /path/to/code-search-mcp/dist/index.js
-```
-
-**Project-level config:** Add to `.mcp.json` in your project root for team-shared access.
-
 ### Step 2: Add Instructions for Claude Code
 
-Copy the example instructions to your Claude Code instructions file to help Claude use the search effectively:
+**Option A: Use the MCP tool (recommended)**
+
+Once connected, ask Claude to run:
+```
+Use the get_instructions tool to get the code-search instructions, then add them to my CLAUDE.md file.
+```
+
+Or via CLI:
+```bash
+# The get_instructions tool returns markdown content for CLAUDE.md
+# Format options: "claude" (default), "copilot", "generic"
+```
+
+**Option B: Copy manually**
 
 ```bash
 # Copy to global instructions
@@ -161,17 +239,14 @@ See [examples/COPILOT.md](examples/COPILOT.md) for the full instructions templat
 
 ---
 
-## Running in SSE Mode (with Admin UI)
+## Admin UI Features
 
-For the web-based admin UI, run in SSE mode:
+The Admin UI is available when running in SSE mode (see [Running the Server](#running-the-server)):
 
 ```bash
-node dist/index.js --sse --port 3100
+node dist/index.js --sse
+# Then open: http://localhost:3100/admin
 ```
-
-Then access the admin UI at: `http://localhost:3100/admin`
-
-### Admin UI Features
 
 **Folders Tab:**
 - View all indexed folders with status
@@ -228,6 +303,30 @@ Use the `configure` tool to set up the server after connecting.
 
 Supported: `gemini`, `mistral`, `bedrock`, `openrouter`, `openai-compatible`
 
+### Per-Folder Embedding Models
+
+You can configure different embedding models for different folders via the Admin UI. This is useful when:
+- Some projects need higher quality embeddings (use larger models)
+- Some projects need faster indexing (use smaller models)
+- Testing different models for comparison
+
+**Supported models and their context sizes:**
+
+| Model | Provider | Context (tokens) |
+|-------|----------|------------------|
+| `nomic-embed-text` | Ollama | 8192 |
+| `mxbai-embed-large` | Ollama | 512 |
+| `text-embedding-3-small` | OpenAI | 8191 |
+| `text-embedding-3-large` | OpenAI | 8191 |
+| `text-embedding-ada-002` | OpenAI | 8191 |
+| `mistral-embed` | Mistral | 8192 |
+| `voyage-code-2` | Voyage | 16000 |
+| `voyage-code-3` | Voyage | 32000 |
+| `gemma2` | Ollama | 8192 |
+| `snowflake-arctic-embed` | Ollama | 8192 |
+
+**Note:** For code indexing, models with larger context (8192+ tokens) are recommended to avoid truncation of large functions/classes.
+
 ---
 
 ## Available Tools Reference
@@ -240,6 +339,10 @@ Supported: `gemini`, `mistral`, `bedrock`, `openrouter`, `openai-compatible`
 | `remove_folder` | Remove a folder from indexing |
 | `list_folders` | List all indexed folders |
 | `clear_index` | Clear/rebuild index |
+| `reindex_folder` | Reindex a folder (clears and rebuilds) |
+| `pause_indexing` | Pause indexing for a folder |
+| `resume_indexing` | Resume paused indexing |
+| `reenrich_folder` | Re-enrich folder with LSP (for folders indexed without LSP) |
 
 ### Search
 
@@ -261,6 +364,17 @@ Supported: `gemini`, `mistral`, `bedrock`, `openrouter`, `openai-compatible`
 | `get_status` | Get indexing status |
 | `get_errors` | Get error reports |
 | `configure` | Update server configuration |
+| `get_instructions` | Get AI assistant instructions (for CLAUDE.md, etc.) |
+
+### CLI Usage Examples
+
+```bash
+# From Claude CLI, you can use these tools directly:
+# "search for authentication middleware"
+# "add folder /path/to/project"
+# "pause indexing for project-name"
+# "reindex the api folder"
+```
 
 ---
 
@@ -361,6 +475,144 @@ See [FUTURE-IMPROVEMENTS.md](FUTURE-IMPROVEMENTS.md) for planned enhancements in
 - Multi-level code summaries
 - Graph-based relationship tracking
 - Hybrid BM25 + vector search
+
+---
+
+## Troubleshooting
+
+### Claude CLI: "Failed to connect" Error
+
+**Symptom:** `claude mcp list` shows `code-search: ... - ✗ Failed to connect`
+
+**Solutions:**
+
+1. **Verify the server can start manually:**
+   ```bash
+   node /path/to/code-search-mcp/dist/index.js
+   ```
+   Should output: `[CodeSearch] Server running on stdio`
+
+2. **Check if Qdrant is running:**
+   ```bash
+   curl http://localhost:6333/collections
+   ```
+   If not running, start it: `docker run -p 6333:6333 qdrant/qdrant`
+
+3. **Check if Ollama is running (if using Ollama embeddings):**
+   ```bash
+   curl http://localhost:11434/api/tags
+   ```
+   If not running, start Ollama and ensure the model is pulled: `ollama pull nomic-embed-text`
+
+4. **Wrong config file location:**
+   - Claude CLI reads `.mcp.json` from the project root, NOT `.claude/mcp.json`
+   - Use `claude mcp add` command to ensure correct placement
+   - Run `claude mcp list` to verify registration
+
+5. **SSE vs stdio mode conflict:**
+   - If running the Admin UI in SSE mode (`--sse` flag), Claude CLI cannot connect
+   - Stop the SSE server before using stdio mode with Claude CLI
+   - Or run two separate instances (different ports)
+
+6. **Rebuild after code changes:**
+   ```bash
+   npm run build
+   ```
+
+### Indexing Stuck or Not Progressing
+
+1. **Check for errors in server output:**
+   - Run manually to see logs: `node dist/index.js`
+   - Look for embedding API errors (context length, rate limits)
+
+2. **Embedding model context limits:**
+   - `mxbai-embed-large`: 512 tokens (small, may truncate code)
+   - `nomic-embed-text`: 8192 tokens (recommended for code)
+   - Large code chunks are automatically truncated with a warning
+
+3. **Pause and resume indexing:**
+   - Use Admin UI or MCP tools to pause/resume
+   - Check `get_errors` for specific file failures
+
+### LSP Enrichment Not Working
+
+1. **Check LSP server is installed:**
+   ```bash
+   # TypeScript/JavaScript
+   typescript-language-server --version
+
+   # C#
+   csharp-ls --version
+   ```
+
+2. **Enable LSP in config:**
+   ```json
+   { "lspEnabled": true }
+   ```
+
+3. **Check LSP status in Admin UI:** Services tab shows LSP server status
+
+### Search Returns Poor Results
+
+1. **Reindex with LSP enabled** for better type information
+2. **Use descriptive queries:** "function that validates user email" instead of "validate"
+3. **Check folder is fully indexed:** Use `get_status` or Admin UI
+4. **Try different embedding model:** Some models work better for code
+
+### Windows Path Issues
+
+1. **Use forward slashes in JSON config:**
+   ```json
+   "args": ["C:/repos/code-search/dist/index.js"]
+   ```
+   Not backslashes: `"C:\\repos\\..."` (can cause escaping issues)
+
+2. **Avoid spaces in paths** or ensure proper quoting
+
+### Port Already in Use (SSE Mode)
+
+```bash
+# Find what's using port 3100
+netstat -ano | findstr :3100  # Windows
+lsof -i :3100                 # macOS/Linux
+
+# Use a different port
+node dist/index.js --sse --port 3101
+```
+
+### Qdrant Connection Refused
+
+1. **Check Docker is running:**
+   ```bash
+   docker ps | grep qdrant
+   ```
+
+2. **Restart Qdrant container:**
+   ```bash
+   docker restart $(docker ps -q --filter ancestor=qdrant/qdrant)
+   # Or start fresh:
+   docker run -d -p 6333:6333 -v qdrant_storage:/qdrant/storage qdrant/qdrant
+   ```
+
+3. **Check firewall/antivirus** isn't blocking port 6333
+
+### Memory Issues with Large Repositories
+
+1. **Increase Node.js memory limit:**
+   ```bash
+   node --max-old-space-size=4096 dist/index.js
+   ```
+
+2. **Index folders incrementally** instead of all at once
+
+3. **Use `.cs-mcp-ignore`** to exclude large generated files or vendor directories
+
+### Embedding API Rate Limits
+
+1. **Use Ollama for local embeddings** (no rate limits)
+2. **Pause and resume indexing** to spread out API calls
+3. **Check provider dashboard** for rate limit details
+4. The embedding cache prevents redundant calls on re-indexing
 
 ---
 

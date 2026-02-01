@@ -8,6 +8,7 @@ import type {
 	LSPEnrichmentData,
 	EnrichedCodeBlock,
 	LSPEnricherOptions,
+	LSPStats,
 } from "./types.js"
 import { DEFAULT_LSP_OPTIONS, EXTENSION_TO_LANGUAGE } from "./types.js"
 import { LSPServerManager } from "./lsp-server-manager.js"
@@ -19,6 +20,16 @@ import { LSPCache } from "./lsp-cache.js"
  */
 export class LSPEnricher implements ILSPEnricher {
 	private readonly options: LSPEnricherOptions
+	private stats: LSPStats = {
+		filesProcessed: 0,
+		filesSkippedUnavailable: 0,
+		filesSkippedUnsupported: 0,
+		filesWithErrors: 0,
+		blocksProcessed: 0,
+		blocksEnriched: 0,
+		blocksNoData: 0,
+		blocksFromCache: 0,
+	}
 
 	constructor(
 		private readonly serverManager: LSPServerManager,
@@ -26,6 +37,23 @@ export class LSPEnricher implements ILSPEnricher {
 		options?: Partial<LSPEnricherOptions>
 	) {
 		this.options = { ...DEFAULT_LSP_OPTIONS, ...options }
+	}
+
+	getStats(): LSPStats {
+		return { ...this.stats }
+	}
+
+	resetStats(): void {
+		this.stats = {
+			filesProcessed: 0,
+			filesSkippedUnavailable: 0,
+			filesSkippedUnsupported: 0,
+			filesWithErrors: 0,
+			blocksProcessed: 0,
+			blocksEnriched: 0,
+			blocksNoData: 0,
+			blocksFromCache: 0,
+		}
 	}
 
 	/**
@@ -39,8 +67,12 @@ export class LSPEnricher implements ILSPEnricher {
 
 		const ext = path.extname(filePath).toLowerCase()
 		if (!this.isLanguageSupported(ext)) {
+			this.stats.filesSkippedUnsupported++
 			return blocks.map((block) => this.toEnrichedBlock(block, undefined))
 		}
+
+		this.stats.filesProcessed++
+		this.stats.blocksProcessed += blocks.length
 
 		// Get the workspace root (folder containing the file)
 		const rootPath = await this.findWorkspaceRoot(filePath)
@@ -48,6 +80,7 @@ export class LSPEnricher implements ILSPEnricher {
 		// Get LSP client
 		const client = await this.serverManager.getClientForFile(filePath, rootPath)
 		if (!client || client.status !== "ready") {
+			this.stats.filesSkippedUnavailable++
 			return blocks.map((block) => this.toEnrichedBlock(block, undefined))
 		}
 
@@ -63,8 +96,19 @@ export class LSPEnricher implements ILSPEnricher {
 			}
 		}
 
+		// Track cache hits
+		this.stats.blocksFromCache += cachedEnrichments.size
+
 		// If everything is cached, return immediately
 		if (blocksToEnrich.length === 0) {
+			// Count enriched blocks from cache
+			for (const enrichment of cachedEnrichments.values()) {
+				if (enrichment?.typeSignature || enrichment?.documentation) {
+					this.stats.blocksEnriched++
+				} else {
+					this.stats.blocksNoData++
+				}
+			}
 			return blocks.map((block) =>
 				this.toEnrichedBlock(block, cachedEnrichments.get(block.segmentHash))
 			)
@@ -85,39 +129,59 @@ export class LSPEnricher implements ILSPEnricher {
 
 		try {
 			// Enrich blocks with concurrency limit
-			const newEnrichments = new Map<string, LSPEnrichmentData>()
+			const newEnrichments = new Map<string, LSPEnrichmentData | null>()
+			let blocksWithData = 0
+			let blocksWithoutData = 0
 
 			// Process in batches
 			const batchSize = this.options.maxConcurrentRequests
 			for (let i = 0; i < blocksToEnrich.length; i += batchSize) {
 				const batch = blocksToEnrich.slice(i, i + batchSize)
 				const promises = batch.map(async ({ block }) => {
-					const enrichment = await this.enrichSingleBlock(block, client, filePath)
-					if (enrichment) {
+					try {
+						const enrichment = await this.enrichSingleBlock(block, client, filePath)
 						newEnrichments.set(block.segmentHash, enrichment)
+						if (enrichment?.typeSignature || enrichment?.documentation) {
+							blocksWithData++
+						} else {
+							blocksWithoutData++
+						}
+					} catch (error) {
+						// Track error but continue
+						newEnrichments.set(block.segmentHash, null)
+						blocksWithoutData++
 					}
 				})
 
 				await Promise.all(promises)
 			}
 
-			// Cache new enrichments
+			// Update stats
+			this.stats.blocksEnriched += blocksWithData
+			this.stats.blocksNoData += blocksWithoutData
+
+			// Cache new enrichments (including nulls to avoid re-querying)
 			if (newEnrichments.size > 0) {
-				const entries = Array.from(newEnrichments.entries()).map(
-					([segmentHash, enrichment]) => ({
+				const entries = Array.from(newEnrichments.entries())
+					.filter(([_, enrichment]) => enrichment !== null)
+					.map(([segmentHash, enrichment]) => ({
 						segmentHash,
-						enrichment,
-					})
-				)
-				this.cache.setEnrichments(entries)
+						enrichment: enrichment!,
+					}))
+				if (entries.length > 0) {
+					this.cache.setEnrichments(entries)
+				}
 			}
 
 			// Build result combining cached and new enrichments
 			return blocks.map((block) => {
 				const enrichment =
-					cachedEnrichments.get(block.segmentHash) || newEnrichments.get(block.segmentHash)
+					cachedEnrichments.get(block.segmentHash) || newEnrichments.get(block.segmentHash) || undefined
 				return this.toEnrichedBlock(block, enrichment)
 			})
+		} catch (error) {
+			this.stats.filesWithErrors++
+			throw error
 		} finally {
 			// Close document
 			await client.closeDocument(filePath)

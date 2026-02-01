@@ -15,7 +15,16 @@ const MAX_LIST_FILES_LIMIT = 50_000
 const BATCH_SEGMENT_THRESHOLD = 60
 const MAX_BATCH_RETRIES = 3
 const INITIAL_RETRY_DELAY_MS = 500
-const PARSING_CONCURRENCY = 10
+const DEFAULT_PARSING_CONCURRENCY = 10
+
+export interface PipelineStats {
+	fileDiscoveryMs: number
+	parsingMs: number
+	lspEnrichmentMs: number
+	embeddingMs: number
+	vectorStoreMs: number
+	totalMs: number
+}
 
 export interface ScanResult {
 	stats: {
@@ -23,6 +32,7 @@ export interface ScanResult {
 		skipped: number
 	}
 	totalBlockCount: number
+	pipelineStats?: PipelineStats
 }
 
 export interface ScannerCallbacks {
@@ -30,6 +40,7 @@ export interface ScannerCallbacks {
 	onBlocksIndexed?: (count: number) => void
 	onFileParsed?: (blockCount: number) => void
 	onProgress?: (processed: number, total: number, currentFile?: string) => void
+	isPaused?: () => boolean
 }
 
 /**
@@ -37,6 +48,7 @@ export interface ScannerCallbacks {
  */
 export class DirectoryScanner {
 	private readonly batchSegmentThreshold: number
+	private readonly parsingConcurrency: number
 
 	constructor(
 		private readonly folderId: string,
@@ -47,12 +59,24 @@ export class DirectoryScanner {
 		private readonly cacheManager: ICacheManager,
 		private readonly embeddingCache?: EmbeddingCache,
 		private readonly lspEnricher?: ILSPEnricher,
-		batchSegmentThreshold?: number
+		batchSegmentThreshold?: number,
+		parsingConcurrency?: number
 	) {
 		this.batchSegmentThreshold = batchSegmentThreshold || BATCH_SEGMENT_THRESHOLD
+		this.parsingConcurrency = parsingConcurrency || DEFAULT_PARSING_CONCURRENCY
 	}
 
 	async scanDirectory(callbacks?: ScannerCallbacks): Promise<ScanResult> {
+		const scanStartTime = Date.now()
+
+		// Pipeline timing accumulators
+		let fileDiscoveryMs = 0
+		let parsingMs = 0
+		let lspEnrichmentMs = 0
+		let embeddingMs = 0
+		let vectorStoreMs = 0
+
+		const fileDiscoveryStart = Date.now()
 		const ig = await createIgnoreFromGitignore(this.folderPath)
 
 		// Get all files recursively
@@ -65,6 +89,7 @@ export class DirectoryScanner {
 
 		// Filter by ignore patterns
 		const allowedFiles = filterPathsWithIgnore(limitedFiles, this.folderPath, ig)
+		fileDiscoveryMs = Date.now() - fileDiscoveryStart
 
 		const processedFiles = new Set<string>()
 		let processedCount = 0
@@ -75,6 +100,9 @@ export class DirectoryScanner {
 		let currentBatchBlocks: CodeBlock[] = []
 		let currentBatchTexts: string[] = []
 		let currentBatchFileInfos: { filePath: string; fileHash: string; isNew: boolean }[] = []
+
+		// Timing accumulators for this scan (passed to processBatch)
+		const timingAccum = { parsingMs: 0, lspEnrichmentMs: 0, embeddingMs: 0, vectorStoreMs: 0 }
 
 		// Process files with limited concurrency
 		const processFile = async (filePath: string, index: number): Promise<void> => {
@@ -102,10 +130,12 @@ export class DirectoryScanner {
 				}
 
 				// Parse file
+				const parseStart = Date.now()
 				const blocks = await this.codeParser.parseFile(filePath, {
 					content,
 					fileHash: currentFileHash,
 				})
+				timingAccum.parsingMs += Date.now() - parseStart
 				callbacks?.onFileParsed?.(blocks.length)
 				processedCount++
 
@@ -124,7 +154,8 @@ export class DirectoryScanner {
 									currentBatchBlocks,
 									currentBatchTexts,
 									currentBatchFileInfos,
-									callbacks
+									callbacks,
+									timingAccum
 								)
 								currentBatchBlocks = []
 								currentBatchTexts = []
@@ -154,14 +185,19 @@ export class DirectoryScanner {
 		}
 
 		// Process files in batches with concurrency
-		for (let i = 0; i < allowedFiles.length; i += PARSING_CONCURRENCY) {
-			const batch = allowedFiles.slice(i, i + PARSING_CONCURRENCY)
+		for (let i = 0; i < allowedFiles.length; i += this.parsingConcurrency) {
+			// Wait while paused
+			while (callbacks?.isPaused?.()) {
+				await new Promise((resolve) => setTimeout(resolve, 500))
+			}
+
+			const batch = allowedFiles.slice(i, i + this.parsingConcurrency)
 			await Promise.all(batch.map((file, idx) => processFile(file, i + idx)))
 		}
 
 		// Process remaining batch
 		if (currentBatchBlocks.length > 0) {
-			await this.processBatch(currentBatchBlocks, currentBatchTexts, currentBatchFileInfos, callbacks)
+			await this.processBatch(currentBatchBlocks, currentBatchTexts, currentBatchFileInfos, callbacks, timingAccum)
 		}
 
 		// Handle deleted files
@@ -183,12 +219,29 @@ export class DirectoryScanner {
 			}
 		}
 
+		const totalMs = Date.now() - scanStartTime
+
+		// Build pipeline stats
+		const pipelineStats: PipelineStats = {
+			fileDiscoveryMs,
+			parsingMs: timingAccum.parsingMs,
+			lspEnrichmentMs: timingAccum.lspEnrichmentMs,
+			embeddingMs: timingAccum.embeddingMs,
+			vectorStoreMs: timingAccum.vectorStoreMs,
+			totalMs,
+		}
+
+		// Log pipeline stats
+		const pct = (ms: number) => totalMs > 0 ? ((ms / totalMs) * 100).toFixed(1) : '0'
+		console.log(`[PipelineStats] Discovery: ${pct(fileDiscoveryMs)}%, Parsing: ${pct(timingAccum.parsingMs)}%, LSP: ${pct(timingAccum.lspEnrichmentMs)}%, Embedding: ${pct(timingAccum.embeddingMs)}%, VectorStore: ${pct(timingAccum.vectorStoreMs)}%`)
+
 		return {
 			stats: {
 				processed: processedCount,
 				skipped: skippedCount,
 			},
 			totalBlockCount,
+			pipelineStats,
 		}
 	}
 
@@ -196,7 +249,8 @@ export class DirectoryScanner {
 		batchBlocks: CodeBlock[],
 		batchTexts: string[],
 		batchFileInfos: { filePath: string; fileHash: string; isNew: boolean }[],
-		callbacks?: ScannerCallbacks
+		callbacks?: ScannerCallbacks,
+		timingAccum?: { parsingMs: number; lspEnrichmentMs: number; embeddingMs: number; vectorStoreMs: number }
 	): Promise<void> {
 		if (batchBlocks.length === 0) return
 
@@ -208,6 +262,7 @@ export class DirectoryScanner {
 			attempts++
 			try {
 				// Delete old points for modified files
+				const vsDeleteStart = Date.now()
 				const modifiedFilePaths = [
 					...new Set(
 						batchFileInfos
@@ -218,6 +273,7 @@ export class DirectoryScanner {
 				if (modifiedFilePaths.length > 0) {
 					await this.vectorStore.deletePointsByMultipleFilePaths(modifiedFilePaths, this.folderId)
 				}
+				if (timingAccum) timingAccum.vectorStoreMs += Date.now() - vsDeleteStart
 
 				// Build enriched content with parent context
 				const buildContextPrefix = (block: CodeBlock): string => {
@@ -245,6 +301,7 @@ export class DirectoryScanner {
 					enrichedContent: buildContextPrefix(block) + block.content,
 				}))
 
+				const lspStart = Date.now()
 				if (this.lspEnricher) {
 					// Group blocks by file for efficient LSP enrichment
 					const blocksByFile = new Map<string, { indices: number[]; blocks: CodeBlock[] }>()
@@ -270,6 +327,7 @@ export class DirectoryScanner {
 						}
 					}
 				}
+				if (timingAccum) timingAccum.lspEnrichmentMs += Date.now() - lspStart
 
 				// Use enrichedContent for embedding (includes type signatures and docs)
 				const textsForEmbedding = enrichedBlocks.map((b) => b.enrichedContent.trim())
@@ -289,6 +347,7 @@ export class DirectoryScanner {
 				}
 
 				// Only call embedder for uncached blocks
+				const embeddingStart = Date.now()
 				let newEmbeddings: number[][] = []
 				if (uncachedTexts.length > 0) {
 					const result = await this.embedder.createEmbeddings(uncachedTexts)
@@ -305,6 +364,7 @@ export class DirectoryScanner {
 						this.embeddingCache.setEmbeddings(cacheEntries)
 					}
 				}
+				if (timingAccum) timingAccum.embeddingMs += Date.now() - embeddingStart
 
 				// Merge cached and new embeddings
 				const allEmbeddings: (number[] | null)[] = batchBlocks.map((block, idx) => {

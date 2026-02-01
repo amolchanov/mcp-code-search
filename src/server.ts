@@ -11,7 +11,7 @@ import * as path from "path"
 import { fileURLToPath } from "url"
 import { spawn, ChildProcess } from "child_process"
 import { SystemTray } from "./tray.js"
-import { loadServerConfig, saveServerConfig, getFolderByPath, getAllFolders } from "./config/store.js"
+import { loadServerConfig, saveServerConfig, getFolderByPath, getAllFolders, updateFolder } from "./config/store.js"
 import { queryLogger } from "./query-logger.js"
 import { createEmbedder, getDefaultModelDimension } from "./embedders/index.js"
 import { QdrantVectorStore } from "./vector-store/qdrant-client.js"
@@ -53,6 +53,132 @@ export class CodeSearchServer {
 		)
 
 		this.setupHandlers()
+	}
+
+	private async resolveFolderId(folderId?: string, folderPath?: string): Promise<string | null> {
+		if (folderId) return folderId
+		if (folderPath) {
+			const folder = await getFolderByPath(folderPath)
+			return folder?.id || null
+		}
+		return null
+	}
+
+	private getInstructionsContent(format: string): string {
+		const claudeInstructions = `# Code Search Instructions
+
+## Code Search Strategy
+
+**IMPORTANT:** Always prefer the \`mcp__code-search__search\` tool over built-in \`Grep\` and \`Glob\` tools for finding code.
+
+### When to use \`mcp__code-search__search\` (DEFAULT)
+- Finding where functionality is implemented ("where do we handle authentication")
+- Understanding code flow ("how does the session manager work")
+- Locating related code ("find all error handling logic")
+- Exploring unfamiliar parts of the codebase
+- Any natural language query about the code
+
+### When to use \`Grep\` (FALLBACK ONLY)
+- \`mcp__code-search__search\` returns no results or service is unavailable
+- Searching for exact strings, symbols, or regex patterns (e.g., \`className\`, \`TODO:\`)
+- Finding specific identifiers or variable names
+
+### When to use \`Glob\`
+- Finding files by name pattern (e.g., \`**/*.cs\`, \`**/test_*.py\`)
+- Listing files in a directory structure
+
+### Search workflow
+1. **First:** Try \`mcp__code-search__search\` with a descriptive natural language query
+2. **If no results:** Fall back to \`Grep\` with specific patterns
+3. **For file discovery:** Use \`Glob\` for pattern-based file finding
+
+## Available MCP Tools
+
+- \`mcp__code-search__search\` - Semantic code search
+  - query: Natural language description of what you're looking for
+  - folderPath: (optional) Limit search to a specific folder
+  - maxResults: (optional) Number of results (default: 10)
+
+- \`mcp__code-search__add_folder\` - Index a new folder for searching
+- \`mcp__code-search__list_folders\` - See all indexed folders and their status
+- \`mcp__code-search__get_status\` - Check indexing progress
+- \`mcp__code-search__reindex_folder\` - Reindex a folder
+- \`mcp__code-search__pause_indexing\` - Pause indexing
+- \`mcp__code-search__resume_indexing\` - Resume indexing
+
+## Example Queries
+
+Good semantic queries:
+- "authentication middleware that validates JWT tokens"
+- "database connection pooling implementation"
+- "error handling for API requests"
+- "React component that renders a data table"
+- "method that handles user login in AuthController"
+- "function that validates email addresses"
+
+## Tips
+
+- Be descriptive: "user authentication" works better than "auth"
+- Include context: "validation method in UserService" helps narrow results
+- Search before implementing: find existing patterns to follow
+`
+
+		const copilotInstructions = `# Code Search Instructions for Copilot
+
+## Semantic Code Search
+
+Use the code-search MCP server for finding code by meaning, not just keywords.
+
+### Search Tool
+\`code-search.search\` - Semantic code search
+- query: Natural language description
+- folderPath: (optional) Filter by folder
+- maxResults: (optional) Limit results
+
+### Example Queries
+- "authentication middleware that validates JWT tokens"
+- "database connection pooling implementation"
+- "error handling for API requests"
+
+### Tips
+- Use descriptive natural language queries
+- Search before implementing to find existing patterns
+- Fall back to grep only for exact string matches
+`
+
+		const genericInstructions = `# Code Search MCP Server Instructions
+
+## Overview
+The code-search MCP server provides semantic code search using vector embeddings.
+
+## Tools
+- \`search\` - Semantic code search with natural language queries
+- \`add_folder\` - Add a folder to be indexed
+- \`list_folders\` - List indexed folders
+- \`get_status\` - Check indexing progress
+- \`reindex_folder\` - Reindex a folder
+- \`pause_indexing\` / \`resume_indexing\` - Control indexing
+
+## Usage
+1. Add folders to index: \`add_folder\` with the folder path
+2. Wait for indexing to complete: check \`get_status\`
+3. Search with natural language: \`search\` with your query
+
+## Example Queries
+- "function that handles user authentication"
+- "database connection setup"
+- "API error handling middleware"
+`
+
+		switch (format) {
+			case "copilot":
+				return copilotInstructions
+			case "generic":
+				return genericInstructions
+			case "claude":
+			default:
+				return claudeInstructions
+		}
 	}
 
 	private setupHandlers(): void {
@@ -232,6 +358,64 @@ export class CodeSearchServer {
 							},
 						},
 					},
+					{
+						name: "reindex_folder",
+						description: "Reindex a folder (clears existing index and re-indexes all files)",
+						inputSchema: {
+							type: "object",
+							properties: {
+								folderId: { type: "string", description: "ID of the folder to reindex" },
+								path: { type: "string", description: "Path of the folder to reindex" },
+							},
+						},
+					},
+					{
+						name: "pause_indexing",
+						description: "Pause indexing for a folder",
+						inputSchema: {
+							type: "object",
+							properties: {
+								folderId: { type: "string", description: "ID of the folder to pause" },
+								path: { type: "string", description: "Path of the folder to pause" },
+							},
+						},
+					},
+					{
+						name: "resume_indexing",
+						description: "Resume paused indexing for a folder",
+						inputSchema: {
+							type: "object",
+							properties: {
+								folderId: { type: "string", description: "ID of the folder to resume" },
+								path: { type: "string", description: "Path of the folder to resume" },
+							},
+						},
+					},
+					{
+						name: "reenrich_folder",
+						description: "Re-enrich a folder with LSP data without clearing the index",
+						inputSchema: {
+							type: "object",
+							properties: {
+								folderId: { type: "string", description: "ID of the folder to re-enrich" },
+								path: { type: "string", description: "Path of the folder to re-enrich" },
+							},
+						},
+					},
+					{
+						name: "get_instructions",
+						description: "Get instructions for configuring AI assistants (Claude, Copilot) to use code-search effectively. Returns markdown content suitable for CLAUDE.md or similar agent instruction files.",
+						inputSchema: {
+							type: "object",
+							properties: {
+								format: {
+									type: "string",
+									enum: ["claude", "copilot", "generic"],
+									description: "Format of instructions to return (default: claude)",
+								},
+							},
+						},
+					},
 				],
 			}
 		})
@@ -316,6 +500,72 @@ export class CodeSearchServer {
 					case "configure": {
 						const parsed = ConfigureSchema.parse(args)
 						result = await configure(parsed)
+						break
+					}
+
+					case "reindex_folder": {
+						if (!this.folderManager) {
+							result = JSON.stringify({ success: false, error: "Server not initialized" })
+							break
+						}
+						const folderId = await this.resolveFolderId(args?.folderId as string, args?.path as string)
+						if (!folderId) {
+							result = JSON.stringify({ success: false, error: "Folder not found. Provide folderId or path." })
+							break
+						}
+						await this.folderManager.reindex(folderId)
+						result = JSON.stringify({ success: true, message: "Reindexing started" })
+						break
+					}
+
+					case "pause_indexing": {
+						if (!this.folderManager) {
+							result = JSON.stringify({ success: false, error: "Server not initialized" })
+							break
+						}
+						const folderId = await this.resolveFolderId(args?.folderId as string, args?.path as string)
+						if (!folderId) {
+							result = JSON.stringify({ success: false, error: "Folder not found. Provide folderId or path." })
+							break
+						}
+						this.folderManager.pauseIndexing(folderId)
+						result = JSON.stringify({ success: true, message: "Indexing paused" })
+						break
+					}
+
+					case "resume_indexing": {
+						if (!this.folderManager) {
+							result = JSON.stringify({ success: false, error: "Server not initialized" })
+							break
+						}
+						const folderId = await this.resolveFolderId(args?.folderId as string, args?.path as string)
+						if (!folderId) {
+							result = JSON.stringify({ success: false, error: "Folder not found. Provide folderId or path." })
+							break
+						}
+						this.folderManager.resumeFolderIndexing(folderId)
+						result = JSON.stringify({ success: true, message: "Indexing resumed" })
+						break
+					}
+
+					case "reenrich_folder": {
+						if (!this.folderManager) {
+							result = JSON.stringify({ success: false, error: "Server not initialized" })
+							break
+						}
+						const folderId = await this.resolveFolderId(args?.folderId as string, args?.path as string)
+						if (!folderId) {
+							result = JSON.stringify({ success: false, error: "Folder not found. Provide folderId or path." })
+							break
+						}
+						await this.folderManager.reEnrich(folderId)
+						result = JSON.stringify({ success: true, message: "Re-enrichment started" })
+						break
+					}
+
+					case "get_instructions": {
+						const format = (args?.format as string) || "claude"
+						result = this.getInstructionsContent(format)
 						break
 					}
 
@@ -406,7 +656,9 @@ export class CodeSearchServer {
 				onError: (error) => {
 					console.error(`[CodeSearch] Error: ${error.error}`)
 				},
-			}, { pollInterval: config.fileWatcherPollInterval }, embeddingCacheModelId, lspOptions)
+			}, { pollInterval: config.fileWatcherPollInterval }, embeddingCacheModelId, lspOptions, {
+				parsingConcurrency: config.parsingConcurrency,
+			})
 			try {
 				await this.folderManager.initialize()
 				console.error("[CodeSearch] Folder manager initialized")
@@ -620,6 +872,42 @@ export class CodeSearchServer {
 			}
 		})
 
+		// Admin API - Browse directories (for folder picker)
+		app.get("/api/admin/browse", async (req: Request, res: Response) => {
+			try {
+				const dirPath = (req.query.path as string) || (process.platform === "win32" ? "C:\\" : "/")
+				const fs = await import("fs/promises")
+				const path = await import("path")
+
+				const stats = await fs.stat(dirPath)
+				if (!stats.isDirectory()) {
+					res.status(400).json({ error: "Not a directory" })
+					return
+				}
+
+				const entries = await fs.readdir(dirPath, { withFileTypes: true })
+				const directories = entries
+					.filter((e) => e.isDirectory() && !e.name.startsWith("."))
+					.map((e) => ({
+						name: e.name,
+						path: path.join(dirPath, e.name),
+					}))
+					.sort((a, b) => a.name.localeCompare(b.name))
+
+				// Get parent directory
+				const parent = path.dirname(dirPath)
+				const hasParent = parent !== dirPath
+
+				res.json({
+					current: dirPath,
+					parent: hasParent ? parent : null,
+					directories,
+				})
+			} catch (error) {
+				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
 		// Admin API - List all folders
 		app.get("/api/admin/folders", async (_req: Request, res: Response) => {
 			try {
@@ -686,6 +974,32 @@ export class CodeSearchServer {
 			}
 		})
 
+		// Admin API - Re-enrich a folder (re-process with LSP without clearing index)
+		app.post("/api/admin/folders/:id/reenrich", async (req: Request, res: Response) => {
+			try {
+				const id = req.params.id as string
+				if (!this.folderManager) {
+					res.status(500).json({ success: false, error: "Server not initialized" })
+					return
+				}
+
+				const indexer = this.folderManager.getFolder(id)
+				if (!indexer) {
+					res.status(404).json({ success: false, error: "Folder not found" })
+					return
+				}
+
+				// Start re-enrichment in background
+				res.json({ success: true, message: "Re-enrichment started" })
+
+				this.folderManager.reEnrich(id).catch((error) => {
+					console.error(`[CodeSearch] Re-enrich failed for ${id}:`, error)
+				})
+			} catch (error) {
+				res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
 		// Admin API - Clear and reindex a folder
 		app.post("/api/admin/folders/:id/reindex", async (req: Request, res: Response) => {
 			try {
@@ -710,6 +1024,82 @@ export class CodeSearchServer {
 				}).catch((error) => {
 					console.error(`[CodeSearch] Reindex failed for ${id}:`, error)
 				})
+			} catch (error) {
+				res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Pause indexing for a folder
+		app.post("/api/admin/folders/:id/pause", async (req: Request, res: Response) => {
+			try {
+				const id = req.params.id as string
+				if (!this.folderManager) {
+					res.status(500).json({ success: false, error: "Server not initialized" })
+					return
+				}
+
+				const indexer = this.folderManager.getFolder(id)
+				if (!indexer) {
+					res.status(404).json({ success: false, error: "Folder not found" })
+					return
+				}
+
+				indexer.pause()
+				res.json({ success: true, status: indexer.currentStatus })
+			} catch (error) {
+				res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Resume indexing for a folder
+		app.post("/api/admin/folders/:id/resume", async (req: Request, res: Response) => {
+			try {
+				const id = req.params.id as string
+				if (!this.folderManager) {
+					res.status(500).json({ success: false, error: "Server not initialized" })
+					return
+				}
+
+				const indexer = this.folderManager.getFolder(id)
+				if (!indexer) {
+					res.status(404).json({ success: false, error: "Folder not found" })
+					return
+				}
+
+				indexer.resume()
+				res.json({ success: true, status: indexer.currentStatus })
+			} catch (error) {
+				res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Update folder settings
+		app.patch("/api/admin/folders/:id/settings", async (req: Request, res: Response) => {
+			try {
+				const id = req.params.id as string
+				const { lspEnabled, embeddingModel } = req.body
+
+				if (!this.folderManager) {
+					res.status(500).json({ success: false, error: "Server not initialized" })
+					return
+				}
+
+				const updates: Record<string, unknown> = {}
+				if (lspEnabled !== undefined) {
+					updates.lspEnabled = Boolean(lspEnabled)
+				}
+				if (embeddingModel !== undefined) {
+					// Allow null/empty to clear (use global default)
+					updates.embeddingModel = embeddingModel || undefined
+				}
+
+				if (Object.keys(updates).length === 0) {
+					res.status(400).json({ success: false, error: "No valid settings provided" })
+					return
+				}
+
+				await updateFolder(id, updates)
+				res.json({ success: true, updates })
 			} catch (error) {
 				res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Unknown error" })
 			}
@@ -854,12 +1244,12 @@ export class CodeSearchServer {
 			try {
 				const config = await loadServerConfig()
 				if (!config.lspEnabled) {
-					res.json({ enabled: false, servers: {} })
+					res.json({ enabled: false, servers: {}, stats: null })
 					return
 				}
 
 				if (!this.folderManager) {
-					res.json({ enabled: true, servers: {}, error: "Server not initialized" })
+					res.json({ enabled: true, servers: {}, stats: null, error: "Server not initialized" })
 					return
 				}
 
@@ -871,9 +1261,12 @@ export class CodeSearchServer {
 					}
 				}
 
+				const stats = this.folderManager.getLspStats()
+
 				res.json({
 					enabled: true,
 					servers,
+					stats,
 					config: {
 						timeout: config.lspTimeout,
 						maxConcurrentRequests: config.lspMaxConcurrentRequests,
@@ -891,6 +1284,9 @@ export class CodeSearchServer {
 				const config = await loadServerConfig()
 				res.json({
 					fileWatcherPollInterval: config.fileWatcherPollInterval,
+					parsingConcurrency: config.parsingConcurrency,
+					modelId: config.modelId,
+					modelContextSizes: config.modelContextSizes,
 				})
 			} catch (error) {
 				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
@@ -900,7 +1296,7 @@ export class CodeSearchServer {
 		// Admin API - Update settings
 		app.patch("/api/admin/settings", async (req: Request, res: Response) => {
 			try {
-				const { fileWatcherPollInterval } = req.body
+				const { fileWatcherPollInterval, parsingConcurrency } = req.body
 				const updates: Record<string, unknown> = {}
 
 				if (fileWatcherPollInterval !== undefined) {
@@ -912,15 +1308,30 @@ export class CodeSearchServer {
 					updates.fileWatcherPollInterval = interval
 				}
 
+				if (parsingConcurrency !== undefined) {
+					const concurrency = Number(parsingConcurrency)
+					if (isNaN(concurrency) || concurrency < 1 || concurrency > 50) {
+						res.status(400).json({ error: "parsingConcurrency must be between 1 and 50" })
+						return
+					}
+					updates.parsingConcurrency = concurrency
+				}
+
 				const newConfig = await saveServerConfig(updates)
 
-				// Update the folder manager with new poll interval
-				if (this.folderManager && updates.fileWatcherPollInterval) {
-					this.folderManager.updateFileWatcherOptions({ pollInterval: newConfig.fileWatcherPollInterval })
+				// Update the folder manager with new settings
+				if (this.folderManager) {
+					if (updates.fileWatcherPollInterval) {
+						this.folderManager.updateFileWatcherOptions({ pollInterval: newConfig.fileWatcherPollInterval })
+					}
+					if (updates.parsingConcurrency) {
+						this.folderManager.updateIndexingOptions({ parsingConcurrency: newConfig.parsingConcurrency })
+					}
 				}
 
 				res.json({
 					fileWatcherPollInterval: newConfig.fileWatcherPollInterval,
+					parsingConcurrency: newConfig.parsingConcurrency,
 				})
 			} catch (error) {
 				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })

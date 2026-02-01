@@ -27,6 +27,7 @@ export interface EmbedderInfo {
 export interface IEmbedder {
 	createEmbeddings(texts: string[], model?: string): Promise<EmbeddingResponse>
 	validateConfiguration(): Promise<{ valid: boolean; error?: string }>
+	setMaxContextTokens?(tokens: number): void
 	readonly embedderInfo: EmbedderInfo
 }
 
@@ -124,6 +125,8 @@ export interface IndexedFolder {
 	baseRepoId?: string       // Links to the base repo's folder ID
 	gitCommonDir?: string     // Path to shared .git directory
 	isOrphaned?: boolean      // True if folder no longer exists on disk
+	// Per-folder settings
+	lspEnabled?: boolean      // Override global LSP setting for this folder
 }
 
 export interface FolderProgress {
@@ -164,6 +167,7 @@ export interface ServerConfig {
 	searchMinScore?: number
 	searchMaxResults?: number
 	batchSize?: number
+	modelContextSizes?: Record<string, number>
 }
 
 // Cache types

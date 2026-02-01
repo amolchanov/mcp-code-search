@@ -30,11 +30,34 @@ export const ServerConfigSchema = z.object({
 	searchMaxResults: z.number().min(1).max(100).default(20),
 	batchSize: z.number().min(1).max(200).default(60),
 	fileWatcherPollInterval: z.number().min(50).max(5000).default(100),
+	parsingConcurrency: z.number().min(1).max(50).default(10),
 	// LSP enrichment options
 	lspEnabled: z.boolean().default(true),
 	lspTimeout: z.number().min(1000).max(30000).default(5000),
 	lspMaxConcurrentRequests: z.number().min(1).max(20).default(5),
 	lspUseOmniSharp: z.boolean().default(false),
+	// Model context sizes (model name -> max tokens)
+	modelContextSizes: z.record(z.string(), z.number()).default({
+		// Ollama models
+		"nomic-embed-text": 8192,
+		"mxbai-embed-large": 512,
+		"all-minilm": 256,
+		"snowflake-arctic-embed": 512,
+		"bge-large": 512,
+		"bge-m3": 8192,
+		// OpenAI models
+		"text-embedding-3-small": 8191,
+		"text-embedding-3-large": 8191,
+		"text-embedding-ada-002": 8191,
+		// Gemini models
+		"text-embedding-004": 2048,
+		"embedding-001": 2048,
+		// Mistral models
+		"mistral-embed": 8192,
+		// Voyage AI (via OpenAI-compatible)
+		"voyage-code-2": 16000,
+		"voyage-large-2": 16000,
+	}),
 })
 
 export const FolderStatusSchema = z.enum(["pending", "indexing", "indexed", "error", "paused"])
@@ -54,6 +77,12 @@ export const IndexedFolderSchema = z.object({
 	baseRepoId: z.string().optional(),      // Links to the base repo's folder ID
 	gitCommonDir: z.string().optional(),    // Path to shared .git directory
 	isOrphaned: z.boolean().optional(),     // True if folder no longer exists on disk
+	// Per-folder settings
+	lspEnabled: z.boolean().optional(),     // LSP enrichment (undefined = use global default, which is enabled)
+	lastIndexedWithLsp: z.boolean().optional(), // Whether LSP was enabled during last indexing
+	// Per-folder embedding model (undefined = use global default)
+	embeddingModel: z.string().optional(),
+	lastIndexedWithModel: z.string().optional(), // Model used during last indexing
 })
 
 export const FoldersConfigSchema = z.object({

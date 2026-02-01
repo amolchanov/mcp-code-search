@@ -1,7 +1,7 @@
 import * as path from "path"
 import type { IEmbedder, IVectorStore, IndexedFolder, FolderProgress, IndexingError, FolderStatus } from "../types/index.js"
 import { FolderIndexer, generateFolderId, getFolderNameFromPath } from "./folder-indexer.js"
-import type { LSPOptions } from "./folder-indexer.js"
+import type { LSPOptions, IndexingOptions } from "./folder-indexer.js"
 import type { FileWatcherOptions } from "./file-watcher.js"
 import {
 	addFolder,
@@ -38,8 +38,13 @@ export class FolderManager {
 		private readonly callbacks?: FolderManagerCallbacks,
 		private fileWatcherOptions?: FileWatcherOptions,
 		private readonly modelId?: string,
-		private readonly lspOptions?: LSPOptions
+		private readonly lspOptions?: LSPOptions,
+		private indexingOptions?: IndexingOptions
 	) {}
+
+	updateIndexingOptions(options: IndexingOptions): void {
+		this.indexingOptions = { ...this.indexingOptions, ...options }
+	}
 
 	updateFileWatcherOptions(options: FileWatcherOptions): void {
 		this.fileWatcherOptions = options
@@ -67,7 +72,7 @@ export class FolderManager {
 				onError: (error) => {
 					this.callbacks?.onError?.(error)
 				},
-			}, this.fileWatcherOptions, this.modelId, this.lspOptions)
+			}, this.fileWatcherOptions, this.modelId, this.lspOptions, this.indexingOptions)
 			await indexer.initialize()
 			this.indexers.set(folder.id, indexer)
 		}
@@ -145,7 +150,7 @@ export class FolderManager {
 			onError: (error) => {
 				this.callbacks?.onError?.(error)
 			},
-		}, this.fileWatcherOptions, this.modelId, this.lspOptions)
+		}, this.fileWatcherOptions, this.modelId, this.lspOptions, this.indexingOptions)
 		await indexer.initialize()
 		this.indexers.set(folder.id, indexer)
 
@@ -203,7 +208,7 @@ export class FolderManager {
 			onError: (error) => {
 				this.callbacks?.onError?.(error)
 			},
-		}, this.fileWatcherOptions, this.modelId, this.lspOptions)
+		}, this.fileWatcherOptions, this.modelId, this.lspOptions, this.indexingOptions)
 		await indexer.initialize()
 		this.indexers.set(folder.id, indexer)
 
@@ -263,11 +268,50 @@ export class FolderManager {
 		}
 	}
 
+	async reEnrich(folderId: string): Promise<void> {
+		const indexer = this.indexers.get(folderId)
+		if (!indexer) {
+			throw new Error(`Folder not found: ${folderId}`)
+		}
+
+		try {
+			await indexer.reEnrich()
+		} catch (error) {
+			console.error(`Failed to re-enrich folder ${folderId}:`, error)
+			throw error
+		}
+	}
+
 	async stopIndexing(folderId: string): Promise<void> {
 		const indexer = this.indexers.get(folderId)
 		if (indexer) {
 			await indexer.stopWatching()
 		}
+	}
+
+	pauseIndexing(folderId: string): void {
+		const indexer = this.indexers.get(folderId)
+		if (indexer) {
+			indexer.pause()
+		}
+	}
+
+	resumeFolderIndexing(folderId: string): void {
+		const indexer = this.indexers.get(folderId)
+		if (indexer) {
+			indexer.resume()
+		}
+	}
+
+	async reindex(folderId: string): Promise<void> {
+		const indexer = this.indexers.get(folderId)
+		if (!indexer) {
+			throw new Error(`Folder not found: ${folderId}`)
+		}
+
+		await indexer.clearIndex()
+		await indexer.startIndexing()
+		await indexer.startWatching()
 	}
 
 	async clearIndex(folderId: string): Promise<void> {
@@ -491,6 +535,27 @@ export class FolderManager {
 		for (const indexer of this.indexers.values()) {
 			const status = indexer.lspStatus
 			if (status) return status
+		}
+		return null
+	}
+
+	/**
+	 * Get LSP enrichment statistics
+	 */
+	getLspStats(): {
+		filesProcessed: number
+		filesSkippedUnavailable: number
+		filesSkippedUnsupported: number
+		filesWithErrors: number
+		blocksProcessed: number
+		blocksEnriched: number
+		blocksNoData: number
+		blocksFromCache: number
+	} | null {
+		// Get from any indexer that has LSP enabled
+		for (const indexer of this.indexers.values()) {
+			const stats = indexer.lspStats
+			if (stats) return stats
 		}
 		return null
 	}

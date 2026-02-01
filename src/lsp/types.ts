@@ -69,6 +69,28 @@ export interface ILSPClient {
 }
 
 /**
+ * LSP enrichment statistics
+ */
+export interface LSPStats {
+	/** Total files processed with LSP enabled */
+	filesProcessed: number
+	/** Files where LSP was unavailable (server not ready) */
+	filesSkippedUnavailable: number
+	/** Files where language is not supported */
+	filesSkippedUnsupported: number
+	/** Files where LSP threw an error */
+	filesWithErrors: number
+	/** Total blocks processed */
+	blocksProcessed: number
+	/** Blocks successfully enriched with type info */
+	blocksEnriched: number
+	/** Blocks where LSP returned no data */
+	blocksNoData: number
+	/** Blocks served from cache */
+	blocksFromCache: number
+}
+
+/**
  * Interface for the LSP enricher service
  */
 export interface ILSPEnricher {
@@ -89,6 +111,16 @@ export interface ILSPEnricher {
 	 * Get status of all LSP servers
 	 */
 	getStatus(): Map<string, LSPServerStatus>
+
+	/**
+	 * Get LSP enrichment statistics
+	 */
+	getStats(): LSPStats
+
+	/**
+	 * Reset LSP statistics
+	 */
+	resetStats(): void
 
 	/**
 	 * Shutdown all LSP servers

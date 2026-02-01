@@ -700,6 +700,15 @@
             background: #d97706;
         }
 
+        .folder-item-actions .reenrich-btn {
+            background: #8b5cf6;
+            color: #fff;
+        }
+
+        .folder-item-actions .reenrich-btn:hover {
+            background: #7c3aed;
+        }
+
         .folder-item-actions .remove-btn {
             background: #dc2626;
             color: #fff;
@@ -709,9 +718,46 @@
             background: #b91c1c;
         }
 
+        .folder-item-actions .pause-btn {
+            background: #888;
+            color: #fff;
+        }
+
+        .folder-item-actions .pause-btn:hover {
+            background: #666;
+        }
+
+        .folder-item-actions .resume-btn {
+            background: #22c55e;
+            color: #000;
+        }
+
+        .folder-item-actions .resume-btn:hover {
+            background: #16a34a;
+        }
+
         .folder-item-actions button:disabled {
             opacity: 0.5;
             cursor: not-allowed;
+        }
+
+        .indexing-stats {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: #888;
+            margin-top: 8px;
+        }
+
+        .indexing-stats .stat {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .indexing-stats .stat-value {
+            color: #4f46e5;
+            font-weight: 500;
         }
 
         .folder-item-stats {
@@ -752,6 +798,64 @@
             color: #666;
             margin-top: 4px;
             font-family: monospace;
+        }
+
+        .folder-settings {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #333;
+            font-size: 12px;
+        }
+
+        .folder-settings label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #aaa;
+            cursor: pointer;
+        }
+
+        .folder-settings input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #4f46e5;
+            cursor: pointer;
+        }
+
+        .lsp-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-left: 6px;
+        }
+
+        .lsp-badge.enabled {
+            background: #22c55e;
+            color: #000;
+        }
+
+        .lsp-badge.disabled {
+            background: #666;
+            color: #fff;
+        }
+
+        .folder-browser-item {
+            padding: 10px 14px;
+            cursor: pointer;
+            border-bottom: 1px solid #333;
+            display: flex;
+            align-items: center;
+        }
+
+        .folder-browser-item:hover {
+            background: #3d3d5c;
+        }
+
+        .folder-browser-item.selected {
+            background: #4f46e5;
         }
     </style>
 </head>
@@ -825,14 +929,32 @@
                     <h3 style="margin-bottom: 16px;">Add Folder</h3>
                     <div style="margin-bottom: 16px;">
                         <label for="folderPathInput" style="display: block; margin-bottom: 8px; color: #aaa;">Folder Path (absolute)</label>
-                        <input type="text" id="folderPathInput" placeholder="C:\Projects\my-project or /home/user/project"
-                            style="width: 100%; padding: 10px 12px; background: #1a1a2e; border: 1px solid #444; border-radius: 6px; color: #eee; font-size: 14px;">
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="folderPathInput" placeholder="C:\Projects\my-project or /home/user/project"
+                                style="flex: 1; padding: 10px 12px; background: #1a1a2e; border: 1px solid #444; border-radius: 6px; color: #eee; font-size: 14px;">
+                            <button type="button" onclick="browseFolder()" id="browseFolderBtn"
+                                style="padding: 10px 16px; background: #3d3d5c; border: 1px solid #444; border-radius: 6px; color: #eee; cursor: pointer;"
+                                title="Browse for folder (Chrome/Edge only)">Browse</button>
+                        </div>
                     </div>
                     <div style="display: flex; gap: 8px; justify-content: flex-end;">
                         <button class="service-btn stop" onclick="hideAddFolderModal()">Cancel</button>
                         <button class="service-btn start" id="addFolderBtn" onclick="addFolder()">Add & Index</button>
                     </div>
                     <p id="addFolderError" style="margin-top: 12px; color: #f87171; display: none;"></p>
+                </div>
+            </div>
+
+            <!-- Folder Browser Modal -->
+            <div id="folderBrowserModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1001; align-items: center; justify-content: center;">
+                <div style="background: #2d2d44; padding: 24px; border-radius: 12px; width: 600px; max-width: 90%; max-height: 80vh; display: flex; flex-direction: column;">
+                    <h3 style="margin-bottom: 16px;">Select Folder</h3>
+                    <div id="folderBrowserPath" style="padding: 8px 12px; background: #1a1a2e; border-radius: 6px; margin-bottom: 12px; font-family: monospace; font-size: 13px; word-break: break-all;"></div>
+                    <div id="folderBrowserList" style="flex: 1; overflow-y: auto; background: #1a1a2e; border-radius: 6px; min-height: 300px;"></div>
+                    <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;">
+                        <button class="service-btn stop" onclick="hideFolderBrowser()">Cancel</button>
+                        <button class="service-btn start" onclick="confirmBrowseFolder()">Select This Folder</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -958,6 +1080,46 @@
                 <div id="lspServers" class="service-models" style="max-height: 120px;">
                     No servers active
                 </div>
+
+                <div id="lspStatsSection" style="display: none; margin-top: 16px;">
+                    <div class="card-header" style="margin-bottom: 8px;">
+                        <div class="card-title" style="font-size: 14px;">
+                            <span>&#128200;</span> Enrichment Stats
+                        </div>
+                    </div>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-value" id="lspFilesProcessed">0</div>
+                            <div class="stat-label">Files Processed</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="lspBlocksEnriched" style="color: #4ade80;">0</div>
+                            <div class="stat-label">Blocks Enriched</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="lspBlocksNoData" style="color: #888;">0</div>
+                            <div class="stat-label">No Data</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="lspBlocksFromCache" style="color: #60a5fa;">0</div>
+                            <div class="stat-label">From Cache</div>
+                        </div>
+                    </div>
+                    <div class="stats-grid" style="margin-top: 8px;">
+                        <div class="stat-item">
+                            <div class="stat-value" id="lspFilesSkippedUnavailable" style="color: #fbbf24;">0</div>
+                            <div class="stat-label">Skipped (Unavailable)</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="lspFilesSkippedUnsupported" style="color: #888;">0</div>
+                            <div class="stat-label">Skipped (Unsupported)</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="lspFilesWithErrors" style="color: #f87171;">0</div>
+                            <div class="stat-label">Files with Errors</div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1028,6 +1190,21 @@
                         </p>
                     </div>
 
+                    <div style="margin-bottom: 20px;">
+                        <label for="parsingConcurrency" style="display: block; margin-bottom: 8px; color: #aaa;">
+                            Parsing Concurrency
+                        </label>
+                        <div style="display: flex; gap: 12px; align-items: center;">
+                            <input type="number" id="parsingConcurrency" min="1" max="50" step="1" value="10"
+                                style="width: 120px; padding: 8px 12px; background: #2d2d44; border: 1px solid #444; border-radius: 6px; color: #eee; font-size: 14px;">
+                            <span style="color: #888; font-size: 13px;">Range: 1-50 (default: 10)</span>
+                        </div>
+                        <p style="margin-top: 8px; color: #888; font-size: 13px;">
+                            Number of files to parse in parallel. Higher values speed up indexing but use more memory.
+                            Lower this if you experience memory issues with large files.
+                        </p>
+                    </div>
+
                     <button class="service-btn start" onclick="saveSettings()">Save Settings</button>
                     <span id="settingsSaveStatus" style="margin-left: 12px; color: #4ade80; display: none;">Saved!</span>
                 </div>
@@ -1036,16 +1213,37 @@
     </div>
 
     <script>
-        // Tab switching
+        // Tab switching with URL hash persistence
+        function switchTab(tabName, updateHash = true) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+            const tab = document.querySelector(`.tab[data-tab="${tabName}"]`);
+            if (tab) {
+                tab.classList.add('active');
+                document.getElementById(tabName + 'Tab').classList.add('active');
+                if (updateHash) {
+                    window.location.hash = tabName;
+                }
+            }
+        }
+
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
-                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-
-                tab.classList.add('active');
-                document.getElementById(tab.dataset.tab + 'Tab').classList.add('active');
+                switchTab(tab.dataset.tab);
             });
         });
+
+        // Handle URL hash on load and hash change
+        function handleHashChange() {
+            const hash = window.location.hash.slice(1); // Remove #
+            const validTabs = ['folders', 'queries', 'ingestion', 'services', 'settings'];
+            if (hash && validTabs.includes(hash)) {
+                switchTab(hash, false);
+            }
+        }
+
+        window.addEventListener('hashchange', handleHashChange);
 
         // Format timestamp
         function formatTime(timestamp) {
@@ -1302,6 +1500,14 @@
                                     <div class="stat-value">${progress.startTime ? formatDuration(progress.startTime, progress.endTime) : '-'}</div>
                                     <div class="stat-label">Duration</div>
                                 </div>
+                                <div class="stat-item">
+                                    <div class="stat-value" style="color: #22c55e;">${calcFilesPerSecond(progress)}</div>
+                                    <div class="stat-label">Files/sec</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value" style="color: #f59e0b;">${calcEta(progress)}</div>
+                                    <div class="stat-label">ETA</div>
+                                </div>
                             </div>
                         </div>
                     `;
@@ -1328,10 +1534,42 @@
             return `${Math.floor(durationMs / 3600000)}h ${Math.floor((durationMs % 3600000) / 60000)}m`;
         }
 
+        function calcFilesPerSecond(progress) {
+            if (!progress.startTime || progress.processedFiles === 0) return '0.0';
+            const elapsedSec = (Date.now() - progress.startTime) / 1000;
+            if (elapsedSec < 1) return '...';
+            const rate = progress.processedFiles / elapsedSec;
+            return rate.toFixed(1);
+        }
+
+        function calcEta(progress) {
+            if (!progress.startTime || progress.processedFiles === 0 || !progress.totalFiles) return '...';
+            const elapsedMs = Date.now() - progress.startTime;
+            const elapsedSec = elapsedMs / 1000;
+            if (elapsedSec < 1) return '...';
+
+            const rate = progress.processedFiles / elapsedSec;
+            const remaining = progress.totalFiles - progress.processedFiles;
+            if (remaining <= 0) return 'Done';
+
+            const etaSec = remaining / rate;
+            if (etaSec < 60) return `${Math.round(etaSec)}s`;
+            if (etaSec < 3600) return `${Math.floor(etaSec / 60)}m ${Math.floor(etaSec % 60)}s`;
+            return `${Math.floor(etaSec / 3600)}h ${Math.floor((etaSec % 3600) / 60)}m`;
+        }
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function buildModelOptions(selectedModel) {
+            const models = window.modelContextSizes || {};
+            return Object.keys(models).map(m => {
+                const selected = selectedModel === m ? 'selected' : '';
+                return '<option value="' + m + '" ' + selected + '>' + m + ' (' + models[m] + ' tokens)</option>';
+            }).join('');
         }
 
         function toggleQueryResults(queryId) {
@@ -1438,10 +1676,7 @@
 
         // Switch to services tab
         function switchToServicesTab() {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.querySelector('.tab[data-tab="services"]').classList.add('active');
-            document.getElementById('servicesTab').classList.add('active');
+            switchTab('services');
         }
 
         // Ollama status check
@@ -1614,6 +1849,10 @@
                 const response = await fetch('/api/admin/settings');
                 const data = await response.json();
                 document.getElementById('pollInterval').value = data.fileWatcherPollInterval || 100;
+                document.getElementById('parsingConcurrency').value = data.parsingConcurrency || 10;
+                // Store model context sizes globally for folder model selector
+                window.modelContextSizes = data.modelContextSizes || {};
+                window.globalModelId = data.modelId;
             } catch (error) {
                 console.error('Failed to load settings:', error);
             }
@@ -1621,6 +1860,7 @@
 
         async function saveSettings() {
             const pollInterval = parseInt(document.getElementById('pollInterval').value);
+            const parsingConcurrency = parseInt(document.getElementById('parsingConcurrency').value);
             const statusEl = document.getElementById('settingsSaveStatus');
 
             if (isNaN(pollInterval) || pollInterval < 50 || pollInterval > 5000) {
@@ -1628,11 +1868,19 @@
                 return;
             }
 
+            if (isNaN(parsingConcurrency) || parsingConcurrency < 1 || parsingConcurrency > 50) {
+                alert('Parsing concurrency must be between 1 and 50');
+                return;
+            }
+
             try {
                 const response = await fetch('/api/admin/settings', {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ fileWatcherPollInterval: pollInterval })
+                    body: JSON.stringify({
+                        fileWatcherPollInterval: pollInterval,
+                        parsingConcurrency: parsingConcurrency
+                    })
                 });
 
                 if (!response.ok) {
@@ -1690,6 +1938,21 @@
                     }).join('');
                 } else {
                     serversEl.innerHTML = '<div style="color: #888;">No language servers active yet. They start on demand when indexing files.</div>';
+                }
+
+                // Update LSP stats
+                const statsSection = document.getElementById('lspStatsSection');
+                if (data.stats) {
+                    statsSection.style.display = 'block';
+                    document.getElementById('lspFilesProcessed').textContent = data.stats.filesProcessed || 0;
+                    document.getElementById('lspBlocksEnriched').textContent = data.stats.blocksEnriched || 0;
+                    document.getElementById('lspBlocksNoData').textContent = data.stats.blocksNoData || 0;
+                    document.getElementById('lspBlocksFromCache').textContent = data.stats.blocksFromCache || 0;
+                    document.getElementById('lspFilesSkippedUnavailable').textContent = data.stats.filesSkippedUnavailable || 0;
+                    document.getElementById('lspFilesSkippedUnsupported').textContent = data.stats.filesSkippedUnsupported || 0;
+                    document.getElementById('lspFilesWithErrors').textContent = data.stats.filesWithErrors || 0;
+                } else {
+                    statsSection.style.display = 'none';
                 }
             } catch (error) {
                 console.error('Failed to check LSP status:', error);
@@ -1771,6 +2034,20 @@
                                     ${isWorktree && baseRepoName ? `<div class="folder-item-meta">Base: ${escapeHtml(baseRepoName)}</div>` : ''}
                                 </div>
                                 <div class="folder-item-actions">
+                                    ${isIndexing ? `
+                                        <button class="pause-btn" onclick="pauseIndexing('${folder.id}')">
+                                            &#9208; Pause
+                                        </button>
+                                    ` : folder.status === 'paused' ? `
+                                        <button class="resume-btn" onclick="resumeIndexing('${folder.id}')">
+                                            &#9654; Resume
+                                        </button>
+                                    ` : ''}
+                                    ${folder.lspEnabled !== false && folder.lastIndexedWithLsp !== true ? `
+                                    <button class="reenrich-btn" onclick="reEnrichFolder('${folder.id}')" ${isIndexing || isOrphaned || folder.status === 'paused' ? 'disabled' : ''} title="Re-process files with LSP to add type signatures">
+                                        &#10024; Re-enrich
+                                    </button>
+                                    ` : ''}
                                     <button class="reindex-btn" onclick="reindexFolder('${folder.id}')" ${isIndexing || isOrphaned ? 'disabled' : ''}>
                                         &#8635; Reindex
                                     </button>
@@ -1779,7 +2056,7 @@
                                     </button>
                                 </div>
                             </div>
-                            ${isIndexing ? `
+                            ${isIndexing || folder.status === 'paused' ? `
                                 <div class="progress-bar-container">
                                     <div class="progress-bar" style="width: ${progressPercent}%"></div>
                                 </div>
@@ -1787,6 +2064,17 @@
                                     <span>${progress?.processedFiles || 0} / ${progress?.totalFiles || 0} files</span>
                                     <span>${progressPercent}%</span>
                                 </div>
+                                ${isIndexing && progress?.startTime ? `
+                                    <div class="indexing-stats">
+                                        <span class="stat">&#128200; <span class="stat-value">${calcFilesPerSecond(progress)}</span> files/sec</span>
+                                        <span class="stat">&#128336; ETA: <span class="stat-value">${calcEta(progress)}</span></span>
+                                        <span class="stat">&#9201; Elapsed: <span class="stat-value">${formatDuration(progress.startTime)}</span></span>
+                                    </div>
+                                ` : folder.status === 'paused' ? `
+                                    <div class="indexing-stats">
+                                        <span class="stat" style="color: #888;">&#9208; Paused</span>
+                                    </div>
+                                ` : ''}
                             ` : ''}
                             ${isOrphaned ? `
                                 <div style="color: #f87171; font-size: 12px; margin-top: 8px;">
@@ -1797,6 +2085,33 @@
                                     <span>&#128196; ${folder.fileCount || 0} files</span>
                                     <span>&#9888; ${folder.errorCount || 0} errors</span>
                                     <span>&#128337; ${folder.lastIndexedAt ? formatRelativeTime(folder.lastIndexedAt) : 'Never'}</span>
+                                </div>
+                                <div class="folder-settings">
+                                    <label title="LSP enrichment adds type signatures to improve search quality. Disable if indexing is slow.">
+                                        <input type="checkbox"
+                                            ${folder.lspEnabled !== false ? 'checked' : ''}
+                                            onchange="toggleFolderLsp('${folder.id}', this.checked)"
+                                            ${isIndexing || folder.status === 'paused' ? 'disabled' : ''}>
+                                        LSP Enrichment
+                                        <span class="lsp-badge ${folder.lspEnabled !== false ? 'enabled' : 'disabled'}">
+                                            ${folder.lspEnabled !== false ? 'ON' : 'OFF'}
+                                        </span>
+                                    </label>
+                                    <span style="color: #666; font-size: 11px;">
+                                        ${folder.lspEnabled !== false ? 'Type signatures included in embeddings' : 'Fast mode - no type enrichment'}
+                                    </span>
+                                </div>
+                                <div class="folder-settings" style="margin-top: 8px;">
+                                    <label title="Embedding model to use for this folder">
+                                        Model:
+                                        <select onchange="changeFolderModel('${folder.id}', this.value)"
+                                            ${isIndexing || folder.status === 'paused' ? 'disabled' : ''}
+                                            style="margin-left: 8px; padding: 4px 8px; background: #2d2d44; border: 1px solid #444; border-radius: 4px; color: #eee;">
+                                            <option value="" ${!folder.embeddingModel ? 'selected' : ''}>Global Default</option>
+                                            ${buildModelOptions(folder.embeddingModel)}
+                                        </select>
+                                    </label>
+                                    ${folder.lastIndexedWithModel ? '<span style="color: #666; font-size: 11px; margin-left: 8px;">Last indexed with: ' + folder.lastIndexedWithModel + '</span>' : ''}
                                 </div>
                             `}
                         </div>
@@ -1841,12 +2156,82 @@
             document.getElementById('addFolderModal').style.display = 'flex';
             document.getElementById('folderPathInput').focus();
             document.getElementById('addFolderError').style.display = 'none';
+            // Hide browse button if File System Access API not supported
+            const browseBtn = document.getElementById('browseFolderBtn');
+            if (browseBtn && !('showDirectoryPicker' in window)) {
+                browseBtn.style.display = 'none';
+            }
         }
 
         function hideAddFolderModal() {
             document.getElementById('addFolderModal').style.display = 'none';
             document.getElementById('folderPathInput').value = '';
             document.getElementById('addFolderError').style.display = 'none';
+        }
+
+        let browsePath = '';
+
+        async function browseFolder() {
+            // Show folder browser modal
+            document.getElementById('folderBrowserModal').style.display = 'flex';
+            browsePath = '';
+            await loadBrowseDirectory();
+        }
+
+        function hideFolderBrowser() {
+            document.getElementById('folderBrowserModal').style.display = 'none';
+        }
+
+        async function loadBrowseDirectory(path) {
+            const listEl = document.getElementById('folderBrowserList');
+            listEl.innerHTML = '<div style="padding: 20px; text-align: center; color: #888;">Loading...</div>';
+
+            try {
+                const url = path ? '/api/admin/browse?path=' + encodeURIComponent(path) : '/api/admin/browse';
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (data.error) {
+                    listEl.innerHTML = '<div style="padding: 20px; color: #f87171;">' + data.error + '</div>';
+                    return;
+                }
+
+                browsePath = data.current;
+                document.getElementById('folderBrowserPath').textContent = data.current;
+
+                let html = '';
+                if (data.parent) {
+                    html += '<div class="folder-browser-item" onclick="loadBrowseDirectory(\'' + escapeHtml(data.parent.replace(/\\/g, '\\\\')) + '\')">' +
+                        '<span style="margin-right: 8px;">&#128194;</span>..</div>';
+                }
+
+                for (const dir of data.directories) {
+                    const escapedPath = escapeHtml(dir.path.replace(/\\/g, '\\\\'));
+                    html += '<div class="folder-browser-item" ondblclick="loadBrowseDirectory(\'' + escapedPath + '\')" onclick="selectBrowseFolder(\'' + escapedPath + '\')">' +
+                        '<span style="margin-right: 8px;">&#128193;</span>' + escapeHtml(dir.name) + '</div>';
+                }
+
+                if (data.directories.length === 0 && !data.parent) {
+                    html = '<div style="padding: 20px; text-align: center; color: #888;">No subdirectories</div>';
+                }
+
+                listEl.innerHTML = html;
+            } catch (err) {
+                listEl.innerHTML = '<div style="padding: 20px; color: #f87171;">Error: ' + err.message + '</div>';
+            }
+        }
+
+        function selectBrowseFolder(path) {
+            browsePath = path;
+            document.querySelectorAll('.folder-browser-item').forEach(el => el.classList.remove('selected'));
+            event.target.closest('.folder-browser-item').classList.add('selected');
+        }
+
+        function confirmBrowseFolder() {
+            if (browsePath) {
+                document.getElementById('folderPathInput').value = browsePath;
+                hideFolderBrowser();
+            }
         }
 
         async function addFolder() {
@@ -1912,6 +2297,28 @@
             }
         }
 
+        async function reEnrichFolder(folderId) {
+            if (!confirm('This will re-process all files with current settings (including LSP if enabled).\n\nThe existing index stays searchable during re-enrichment.\n\nContinue?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/folders/${folderId}/reenrich`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    refreshFolders();
+                } else {
+                    alert('Failed to start re-enrichment: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to start re-enrichment: ' + error.message);
+            }
+        }
+
         async function reindexFolder(folderId) {
             if (!confirm('This will clear the index and re-index all files.\n\nThis is useful after upgrading to get new features like parent context enrichment.\n\nContinue?')) {
                 return;
@@ -1934,6 +2341,96 @@
             }
         }
 
+        async function pauseIndexing(folderId) {
+            try {
+                const response = await fetch(`/api/admin/folders/${folderId}/pause`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    refreshFolders();
+                } else {
+                    alert('Failed to pause indexing: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to pause indexing: ' + error.message);
+            }
+        }
+
+        async function resumeIndexing(folderId) {
+            try {
+                const response = await fetch(`/api/admin/folders/${folderId}/resume`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    refreshFolders();
+                } else {
+                    alert('Failed to resume indexing: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to resume indexing: ' + error.message);
+            }
+        }
+
+        async function toggleFolderLsp(folderId, enabled) {
+            try {
+                const response = await fetch(`/api/admin/folders/${folderId}/settings`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ lspEnabled: enabled })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    refreshFolders();
+                    if (!enabled) {
+                        alert('LSP disabled. Reindex to apply (faster indexing, but no type enrichment).');
+                    } else {
+                        alert('LSP enabled. Reindex to apply (slower indexing, but better search quality).');
+                    }
+                } else {
+                    alert('Failed to update settings: ' + (data.error || 'Unknown error'));
+                    refreshFolders(); // Refresh to restore checkbox state
+                }
+            } catch (error) {
+                alert('Failed to update settings: ' + error.message);
+                refreshFolders();
+            }
+        }
+
+        async function changeFolderModel(folderId, modelId) {
+            try {
+                const response = await fetch(`/api/admin/folders/${folderId}/settings`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ embeddingModel: modelId || null })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    refreshFolders();
+                    if (modelId) {
+                        alert(`Model changed to ${modelId}. Reindex to apply the new model.`);
+                    } else {
+                        alert('Model set to global default. Reindex to apply.');
+                    }
+                } else {
+                    alert('Failed to update model: ' + (data.error || 'Unknown error'));
+                    refreshFolders();
+                }
+            } catch (error) {
+                alert('Failed to update model: ' + error.message);
+                refreshFolders();
+            }
+        }
+
         // Handle Enter key in add folder modal
         document.getElementById('folderPathInput').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
@@ -1949,13 +2446,13 @@
         });
 
         // Initial load
-        refreshFolders();
+        handleHashChange(); // Restore tab from URL hash
+        loadSettings().then(() => refreshFolders()); // Load settings first for model list
         refreshQueries();
         refreshIngestion();
         checkHealth();
         checkOllamaStatus();
         checkLspStatus();
-        loadSettings();
         refreshEmbeddingCache();
         startAutoRefresh();
     </script>
