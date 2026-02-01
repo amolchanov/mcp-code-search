@@ -150,40 +150,14 @@ Add this to your Copilot CLI MCP settings file (`~/.config/github-copilot/config
 
 ### Step 2: Add Instructions for Copilot
 
-Add this to your Copilot instructions file to help it use the search effectively:
+Copy the example instructions to your Copilot instructions file:
 
-```markdown
-## Code Search Integration
+See [examples/COPILOT.md](examples/COPILOT.md) for the full instructions template.
 
-A semantic code search server is available for finding code across indexed repositories.
-
-### Tools Available
-
-1. **search** - Find code by semantic meaning
-   - Use natural language queries
-   - Example: search({ query: "function that parses CSV files" })
-
-2. **add_folder** - Add a repository to the search index
-   - Example: add_folder({ path: "/home/user/projects/myapp" })
-
-3. **list_folders** - View indexed repositories
-
-4. **get_status** - Check indexing status
-
-### Best Practices
-
-- Search before implementing new features to find existing code
-- Use descriptive queries: "retry logic with exponential backoff" not "retry"
-- Search for patterns: "singleton pattern implementation"
-- Search for specific functionality: "WebSocket connection handler"
-
-### Integration Tips
-
-When asked to implement something:
-1. First search for existing implementations
-2. Review found code for patterns and conventions
-3. Either reuse existing code or follow established patterns
-```
+**Key points:**
+- Prefer semantic search over grep for finding code
+- Use descriptive natural language queries
+- Search before implementing to find existing patterns
 
 ---
 
