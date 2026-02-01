@@ -407,6 +407,27 @@ export class FolderManager {
 	}
 
 	/**
+	 * Get indexed file count for a specific folder
+	 */
+	getFileCount(folderId: string): number {
+		const indexer = this.indexers.get(folderId)
+		if (indexer) {
+			return indexer.fileCount
+		}
+		return 0
+	}
+
+	/**
+	 * Get indexed chunk count (vector points) for a specific folder
+	 */
+	async getChunkCount(folderId: string): Promise<number> {
+		if (this.vectorStore.getPointCountForFolder) {
+			return this.vectorStore.getPointCountForFolder(folderId)
+		}
+		return 0
+	}
+
+	/**
 	 * Get all worktrees linked to a base repo
 	 */
 	async getLinkedWorktrees(baseRepoId: string): Promise<IndexedFolder[]> {

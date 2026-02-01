@@ -337,8 +337,9 @@
         }
 
         .badge.indexed {
-            background: #4ade80;
-            color: #000;
+            background: #22c55e;
+            color: #fff;
+            font-weight: 600;
         }
 
         .badge.error {
@@ -1262,9 +1263,19 @@
             return `${Math.floor(diff / 86400000)}d ago`;
         }
 
+        // Track expanded query items
+        let expandedQueryIds = new Set();
+
         // Fetch queries
         async function refreshQueries() {
             const content = document.getElementById('queriesContent');
+
+            // Save currently expanded items before refresh
+            document.querySelectorAll('.query-item.expanded').forEach(el => {
+                const id = el.id.replace('query-', '');
+                expandedQueryIds.add(id);
+            });
+
             content.innerHTML = '<div class="empty-state">Loading...</div>';
 
             try {
@@ -1416,6 +1427,16 @@
                 }
 
                 content.innerHTML = html;
+
+                // Restore expanded state for previously expanded items
+                expandedQueryIds.forEach(id => {
+                    const queryItem = document.getElementById(`query-${id}`);
+                    const resultsList = document.getElementById(`results-${id}`);
+                    if (queryItem && resultsList) {
+                        queryItem.classList.add('expanded');
+                        resultsList.classList.add('expanded');
+                    }
+                });
             } catch (error) {
                 content.innerHTML = `
                     <div class="empty-state">
@@ -1577,8 +1598,15 @@
             const resultsList = document.getElementById(`results-${queryId}`);
 
             if (queryItem && resultsList) {
-                queryItem.classList.toggle('expanded');
+                const isExpanded = queryItem.classList.toggle('expanded');
                 resultsList.classList.toggle('expanded');
+
+                // Track expanded state for persistence across refreshes
+                if (isExpanded) {
+                    expandedQueryIds.add(queryId);
+                } else {
+                    expandedQueryIds.delete(queryId);
+                }
             }
         }
 
@@ -2011,7 +2039,8 @@
                     }
 
                     // Build badges
-                    let badges = `<span class="badge ${folder.status}">${folder.status}</span>`;
+                    const statusText = folder.status === 'indexed' ? '✓ indexed' : folder.status;
+                    let badges = `<span class="badge ${folder.status}">${statusText}</span>`;
                     if (isOrphaned) {
                         badges += ` <span class="badge orphaned">orphaned</span>`;
                     }

@@ -692,6 +692,16 @@ The code-search MCP server provides semantic code search using vector embeddings
 	async run(mode: "stdio" | "sse" = "stdio", port: number = 3100, useTray: boolean = false, autoIndexPaths: string[] = []): Promise<void> {
 		await this.initialize()
 
+		// Clean up old query logs on startup
+		try {
+			const deletedCount = await queryLogger.cleanupOldLogs()
+			if (deletedCount > 0) {
+				console.error(`[CodeSearch] Cleaned up ${deletedCount} old query log file(s)`)
+			}
+		} catch (error) {
+			console.error(`[CodeSearch] Warning: Failed to cleanup query logs: ${error instanceof Error ? error.message : error}`)
+		}
+
 		// Auto-index specified folders
 		if (autoIndexPaths.length > 0 && this.folderManager) {
 			for (const folderPath of autoIndexPaths) {
@@ -872,6 +882,27 @@ The code-search MCP server provides semantic code search using vector embeddings
 			}
 		})
 
+		// Admin API - Get query log stats
+		app.get("/api/admin/queries/stats", async (_req: Request, res: Response) => {
+			try {
+				const stats = await queryLogger.getLogStats()
+				res.json(stats)
+			} catch (error) {
+				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Cleanup old query logs
+		app.post("/api/admin/queries/cleanup", async (req: Request, res: Response) => {
+			try {
+				const retentionDays = parseInt(req.query.retentionDays as string) || 7
+				const deletedCount = await queryLogger.cleanupOldLogs(retentionDays)
+				res.json({ success: true, deletedCount })
+			} catch (error) {
+				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
 		// Admin API - Browse directories (for folder picker)
 		app.get("/api/admin/browse", async (req: Request, res: Response) => {
 			try {
@@ -918,12 +949,17 @@ The code-search MCP server provides semantic code search using vector embeddings
 				}
 
 				const allStatuses = this.folderManager.getAllStatuses()
+
+				// Get file counts from cache managers
 				const foldersWithStatus = folders.map((folder) => {
 					const statusInfo = allStatuses.get(folder.id)
+					const fileCount = this.folderManager!.getFileCount(folder.id) || folder.fileCount || 0
+
 					return {
 						...folder,
 						status: statusInfo?.status || folder.status,
 						progress: statusInfo?.progress,
+						fileCount,
 					}
 				})
 

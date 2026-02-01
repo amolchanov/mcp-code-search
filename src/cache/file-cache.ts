@@ -43,6 +43,10 @@ export class FileCacheManager implements ICacheManager {
 		return { ...this.fileHashes }
 	}
 
+	getFileCount(): number {
+		return Object.keys(this.fileHashes).length
+	}
+
 	async clearCacheFile(): Promise<void> {
 		this.fileHashes = {}
 		await this._performSave()

@@ -71,6 +71,7 @@ export interface IVectorStore {
 	hasIndexedData(): Promise<boolean>
 	markIndexingComplete(folderId: string): Promise<void>
 	markIndexingIncomplete(folderId: string): Promise<void>
+	getPointCountForFolder?(folderId: string): Promise<number>
 }
 
 export interface SearchFilter {

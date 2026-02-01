@@ -548,4 +548,23 @@ export class QdrantVectorStore implements IVectorStore {
 			return 0
 		}
 	}
+
+	/**
+	 * Get point count for a specific folder
+	 */
+	async getPointCountForFolder(folderId: string): Promise<number> {
+		try {
+			const result = await this.client.count(this.collectionName, {
+				filter: {
+					must: [{ key: "folderId", match: { value: folderId } }],
+					must_not: [{ key: "type", match: { value: "metadata" } }],
+				},
+				exact: true,
+			})
+			return result.count
+		} catch (error) {
+			console.error(`Failed to get point count for folder ${folderId}:`, error)
+			return 0
+		}
+	}
 }

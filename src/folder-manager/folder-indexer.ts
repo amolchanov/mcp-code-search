@@ -33,7 +33,7 @@ export interface IndexingOptions {
 }
 
 export class FolderIndexer {
-	private status: FolderStatus = "pending"
+	private status: FolderStatus
 	private fileWatcher: FileWatcher | null = null
 	private cacheManager: FileCacheManager
 	private embeddingCache: EmbeddingCache
@@ -59,6 +59,8 @@ export class FolderIndexer {
 		private readonly lspOptions?: LSPOptions,
 		private readonly indexingOptions?: IndexingOptions
 	) {
+		// Restore status from persisted folder config
+		this.status = folder.status || "pending"
 		this.cacheManager = new FileCacheManager(folder.id)
 		// Use modelId or embedder info for cache key
 		const cacheModelId = modelId || embedder.embedderInfo.name
@@ -66,7 +68,7 @@ export class FolderIndexer {
 		this.codeParser = new CodeParser(wasmDirectory)
 		this.progress = {
 			folderId: folder.id,
-			status: "pending",
+			status: this.status,
 			processedFiles: 0,
 			totalFiles: 0,
 			indexedBlocks: 0,
@@ -91,6 +93,10 @@ export class FolderIndexer {
 
 	get recentErrors(): IndexingError[] {
 		return [...this.errors]
+	}
+
+	get fileCount(): number {
+		return this.cacheManager.getFileCount()
 	}
 
 	get embeddingCacheStats(): { totalEntries: number; modelEntries: number; sizeBytes: number } {
