@@ -640,6 +640,119 @@
             background: #4f46e5;
             border-radius: 4px;
         }
+
+        .folder-item {
+            background: #1a1a2e;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+
+        .folder-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+
+        .folder-item-info {
+            flex: 1;
+        }
+
+        .folder-item-name {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .folder-item-path {
+            font-size: 12px;
+            color: #888;
+            font-family: monospace;
+            word-break: break-all;
+        }
+
+        .folder-item-actions {
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+            margin-left: 16px;
+        }
+
+        .folder-item-actions button {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .folder-item-actions .reindex-btn {
+            background: #f59e0b;
+            color: #000;
+        }
+
+        .folder-item-actions .reindex-btn:hover {
+            background: #d97706;
+        }
+
+        .folder-item-actions .remove-btn {
+            background: #dc2626;
+            color: #fff;
+        }
+
+        .folder-item-actions .remove-btn:hover {
+            background: #b91c1c;
+        }
+
+        .folder-item-actions button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .folder-item-stats {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: #888;
+        }
+
+        .folder-item-stats span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .folder-item.orphaned {
+            opacity: 0.6;
+            border: 1px dashed #dc2626;
+        }
+
+        .badge.worktree {
+            background: #6366f1;
+            color: #fff;
+        }
+
+        .badge.base-repo {
+            background: #8b5cf6;
+            color: #fff;
+        }
+
+        .badge.orphaned {
+            background: #dc2626;
+            color: #fff;
+        }
+
+        .folder-item-meta {
+            font-size: 11px;
+            color: #666;
+            margin-top: 4px;
+            font-family: monospace;
+        }
     </style>
 </head>
 <body>
@@ -659,9 +772,11 @@
         </header>
 
         <div class="tabs">
-            <button class="tab active" data-tab="queries">Queries</button>
+            <button class="tab active" data-tab="folders">Folders</button>
+            <button class="tab" data-tab="queries">Queries</button>
             <button class="tab" data-tab="ingestion">Ingestion Progress</button>
             <button class="tab" data-tab="services">Services</button>
+            <button class="tab" data-tab="settings">Settings</button>
         </div>
 
         <div class="auto-refresh-control">
@@ -681,7 +796,48 @@
             </div>
         </div>
 
-        <div id="queriesTab" class="tab-content active">
+        <div id="foldersTab" class="tab-content active">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span>&#128193;</span> Indexed Folders
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="refresh-btn" onclick="refreshFolders()">
+                            <span>&#8635;</span> Refresh
+                        </button>
+                        <button class="refresh-btn" style="background: #f59e0b;" onclick="cleanupOrphanedFolders()" id="cleanupBtn" title="Remove folders that no longer exist on disk">
+                            <span>&#128465;</span> Cleanup
+                        </button>
+                        <button class="refresh-btn" style="background: #22c55e;" onclick="showAddFolderModal()">
+                            <span>&#10133;</span> Add Folder
+                        </button>
+                    </div>
+                </div>
+                <div id="foldersContent" class="content-area">
+                    <div class="empty-state">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Add Folder Modal -->
+            <div id="addFolderModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1000; align-items: center; justify-content: center;">
+                <div style="background: #2d2d44; padding: 24px; border-radius: 12px; width: 500px; max-width: 90%;">
+                    <h3 style="margin-bottom: 16px;">Add Folder</h3>
+                    <div style="margin-bottom: 16px;">
+                        <label for="folderPathInput" style="display: block; margin-bottom: 8px; color: #aaa;">Folder Path (absolute)</label>
+                        <input type="text" id="folderPathInput" placeholder="C:\Projects\my-project or /home/user/project"
+                            style="width: 100%; padding: 10px 12px; background: #1a1a2e; border: 1px solid #444; border-radius: 6px; color: #eee; font-size: 14px;">
+                    </div>
+                    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                        <button class="service-btn stop" onclick="hideAddFolderModal()">Cancel</button>
+                        <button class="service-btn start" id="addFolderBtn" onclick="addFolder()">Add & Index</button>
+                    </div>
+                    <p id="addFolderError" style="margin-top: 12px; color: #f87171; display: none;"></p>
+                </div>
+            </div>
+        </div>
+
+        <div id="queriesTab" class="tab-content">
             <div class="card-header">
                 <div style="display: flex; gap: 16px; align-items: center;">
                     <div class="limit-control">
@@ -760,6 +916,120 @@
                 <div class="service-actions">
                     <button class="service-btn start" id="ollamaStartBtn" onclick="startOllama()">Start Ollama</button>
                     <button class="service-btn stop" id="ollamaStopBtn" onclick="stopOllama()" disabled>Stop Ollama</button>
+                </div>
+            </div>
+
+            <div class="card" id="lspCard" style="display: none; margin-top: 20px;">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span>&#128221;</span> LSP Enrichment Service
+                    </div>
+                    <div class="service-status" id="lspStatus">
+                        <span class="status-dot"></span>
+                        <span id="lspStatusText">Checking...</span>
+                    </div>
+                </div>
+
+                <p style="color: #888; font-size: 13px; margin-bottom: 16px;">
+                    LSP (Language Server Protocol) enrichment adds type signatures and documentation to code chunks before embedding,
+                    improving search quality for TypeScript, JavaScript, and C# files.
+                </p>
+
+                <div class="stats-grid" style="margin-bottom: 16px;">
+                    <div class="stat-item">
+                        <div class="stat-value" id="lspTimeout" style="font-size: 14px;">-</div>
+                        <div class="stat-label">Timeout (ms)</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="lspConcurrency" style="font-size: 14px;">-</div>
+                        <div class="stat-label">Max Concurrent</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="lspCsharpMode" style="font-size: 14px;">-</div>
+                        <div class="stat-label">C# Mode</div>
+                    </div>
+                </div>
+
+                <div class="card-header" style="margin-bottom: 8px;">
+                    <div class="card-title" style="font-size: 14px;">
+                        <span>&#128187;</span> Language Servers
+                    </div>
+                </div>
+                <div id="lspServers" class="service-models" style="max-height: 120px;">
+                    No servers active
+                </div>
+            </div>
+        </div>
+
+        <div id="settingsTab" class="tab-content">
+            <div class="card" style="margin-bottom: 20px;">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span>&#128202;</span> Embedding Cache
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="refresh-btn" onclick="refreshEmbeddingCache()" style="padding: 6px 12px;">
+                            <span>&#8635;</span> Refresh
+                        </button>
+                        <button class="refresh-btn" id="warmCacheBtn" onclick="warmEmbeddingCache()" style="padding: 6px 12px; background: #f59e0b;">
+                            <span>&#128293;</span> Warm Cache
+                        </button>
+                    </div>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value" id="cacheEntries">-</div>
+                        <div class="stat-label">Cached Embeddings</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="cacheModelEntries">-</div>
+                        <div class="stat-label">For Current Model</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="cacheSizeMB">-</div>
+                        <div class="stat-label">Cache Size (MB)</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="cacheSavings" style="color: #4ade80;">-</div>
+                        <div class="stat-label">Est. API Calls Saved</div>
+                    </div>
+                </div>
+
+                <p style="margin-top: 16px; color: #888; font-size: 13px;">
+                    The embedding cache stores computed embeddings in SQLite to avoid redundant API calls.
+                    When re-indexing or updating files, unchanged code chunks use cached embeddings.
+                </p>
+                <p style="margin-top: 8px; color: #888; font-size: 13px;">
+                    <strong>Warm Cache:</strong> Populates the cache from existing Qdrant data. Use this after
+                    upgrading to enable caching for previously indexed content.
+                </p>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span>&#9881;</span> File Watcher Settings
+                    </div>
+                </div>
+
+                <div style="padding: 20px;">
+                    <div style="margin-bottom: 20px;">
+                        <label for="pollInterval" style="display: block; margin-bottom: 8px; color: #aaa;">
+                            Poll Interval (ms)
+                        </label>
+                        <div style="display: flex; gap: 12px; align-items: center;">
+                            <input type="number" id="pollInterval" min="50" max="5000" step="50" value="100"
+                                style="width: 120px; padding: 8px 12px; background: #2d2d44; border: 1px solid #444; border-radius: 6px; color: #eee; font-size: 14px;">
+                            <span style="color: #888; font-size: 13px;">Range: 50-5000ms (default: 100ms)</span>
+                        </div>
+                        <p style="margin-top: 8px; color: #888; font-size: 13px;">
+                            How often the file watcher polls for changes. Lower values detect changes faster but use more CPU.
+                        </p>
+                    </div>
+
+                    <button class="service-btn start" onclick="saveSettings()">Save Settings</button>
+                    <span id="settingsSaveStatus" style="margin-left: 12px; color: #4ade80; display: none;">Saved!</span>
                 </div>
             </div>
         </div>
@@ -1124,10 +1394,17 @@
 
             refreshIntervalId = setInterval(() => {
                 const activeTab = document.querySelector('.tab.active').dataset.tab;
-                if (activeTab === 'queries') {
+                if (activeTab === 'folders') {
+                    refreshFolders();
+                } else if (activeTab === 'queries') {
                     refreshQueries();
-                } else {
+                } else if (activeTab === 'ingestion') {
                     refreshIngestion();
+                } else if (activeTab === 'settings') {
+                    refreshEmbeddingCache();
+                } else if (activeTab === 'services') {
+                    checkOllamaStatus();
+                    checkLspStatus();
                 }
                 checkHealth();
                 checkOllamaStatus();
@@ -1271,11 +1548,415 @@
             }
         }
 
+        // Embedding cache stats
+        async function refreshEmbeddingCache() {
+            try {
+                const response = await fetch('/api/admin/embedding-cache');
+                const data = await response.json();
+
+                if (data.stats) {
+                    document.getElementById('cacheEntries').textContent = data.stats.totalEntries.toLocaleString();
+                    document.getElementById('cacheModelEntries').textContent = data.stats.modelEntries.toLocaleString();
+                    document.getElementById('cacheSizeMB').textContent = data.sizeMB || '0';
+                    // Estimate API calls saved (assuming 60 embeddings per batch = 1 API call)
+                    const callsSaved = Math.floor(data.stats.modelEntries / 60);
+                    document.getElementById('cacheSavings').textContent = callsSaved.toLocaleString();
+                } else {
+                    document.getElementById('cacheEntries').textContent = '-';
+                    document.getElementById('cacheModelEntries').textContent = '-';
+                    document.getElementById('cacheSizeMB').textContent = '-';
+                    document.getElementById('cacheSavings').textContent = '-';
+                }
+
+                // Check warming status
+                const statusResponse = await fetch('/api/admin/embedding-cache/warm/status');
+                const statusData = await statusResponse.json();
+                const warmBtn = document.getElementById('warmCacheBtn');
+                if (statusData.inProgress) {
+                    warmBtn.disabled = true;
+                    warmBtn.innerHTML = '<span>&#8987;</span> Warming...';
+                } else {
+                    warmBtn.disabled = false;
+                    warmBtn.innerHTML = '<span>&#128293;</span> Warm Cache';
+                }
+            } catch (error) {
+                console.error('Failed to load embedding cache stats:', error);
+            }
+        }
+
+        async function warmEmbeddingCache() {
+            const btn = document.getElementById('warmCacheBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<span>&#8987;</span> Starting...';
+
+            try {
+                const response = await fetch('/api/admin/embedding-cache/warm', { method: 'POST' });
+                const data = await response.json();
+
+                if (data.success) {
+                    btn.innerHTML = '<span>&#8987;</span> Warming...';
+                    // Will update on next refresh
+                } else {
+                    alert('Failed to start cache warming: ' + (data.error || 'Unknown error'));
+                    btn.disabled = false;
+                    btn.innerHTML = '<span>&#128293;</span> Warm Cache';
+                }
+            } catch (error) {
+                alert('Failed to start cache warming: ' + error.message);
+                btn.disabled = false;
+                btn.innerHTML = '<span>&#128293;</span> Warm Cache';
+            }
+        }
+
+        // Settings functions
+        async function loadSettings() {
+            try {
+                const response = await fetch('/api/admin/settings');
+                const data = await response.json();
+                document.getElementById('pollInterval').value = data.fileWatcherPollInterval || 100;
+            } catch (error) {
+                console.error('Failed to load settings:', error);
+            }
+        }
+
+        async function saveSettings() {
+            const pollInterval = parseInt(document.getElementById('pollInterval').value);
+            const statusEl = document.getElementById('settingsSaveStatus');
+
+            if (isNaN(pollInterval) || pollInterval < 50 || pollInterval > 5000) {
+                alert('Poll interval must be between 50 and 5000 ms');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/admin/settings', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fileWatcherPollInterval: pollInterval })
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Failed to save settings');
+                }
+
+                statusEl.style.display = 'inline';
+                setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
+            } catch (error) {
+                alert('Failed to save settings: ' + error.message);
+            }
+        }
+
+        // LSP status check
+        async function checkLspStatus() {
+            try {
+                const response = await fetch('/api/admin/lsp/status');
+                const data = await response.json();
+
+                const card = document.getElementById('lspCard');
+                const statusEl = document.getElementById('lspStatus');
+                const statusText = document.getElementById('lspStatusText');
+                const timeoutEl = document.getElementById('lspTimeout');
+                const concurrencyEl = document.getElementById('lspConcurrency');
+                const csharpModeEl = document.getElementById('lspCsharpMode');
+                const serversEl = document.getElementById('lspServers');
+
+                if (!data.enabled) {
+                    card.style.display = 'none';
+                    return;
+                }
+
+                card.style.display = 'block';
+                statusEl.className = 'service-status running';
+                statusText.textContent = 'Enabled';
+
+                // Update config values
+                if (data.config) {
+                    timeoutEl.textContent = data.config.timeout || 5000;
+                    concurrencyEl.textContent = data.config.maxConcurrentRequests || 5;
+                    csharpModeEl.textContent = data.config.useOmniSharp ? 'OmniSharp' : 'csharp-ls';
+                }
+
+                // Update server statuses
+                if (data.servers && Object.keys(data.servers).length > 0) {
+                    serversEl.innerHTML = Object.entries(data.servers).map(([lang, status]) => {
+                        const statusColor = status === 'ready' ? '#4ade80' :
+                                           status === 'starting' ? '#fbbf24' :
+                                           status === 'error' ? '#f87171' : '#888';
+                        return `<div style="padding: 4px 0; border-bottom: 1px solid #333; display: flex; justify-content: space-between;">
+                            <span>${escapeHtml(lang)}</span>
+                            <span style="color: ${statusColor};">${escapeHtml(status)}</span>
+                        </div>`;
+                    }).join('');
+                } else {
+                    serversEl.innerHTML = '<div style="color: #888;">No language servers active yet. They start on demand when indexing files.</div>';
+                }
+            } catch (error) {
+                console.error('Failed to check LSP status:', error);
+            }
+        }
+
+        // Folder management functions
+        async function refreshFolders() {
+            const content = document.getElementById('foldersContent');
+            content.innerHTML = '<div class="empty-state">Loading...</div>';
+
+            try {
+                const response = await fetch('/api/admin/folders');
+                const data = await response.json();
+
+                if (!data.folders || data.folders.length === 0) {
+                    content.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">&#128193;</div>
+                            <p>No folders indexed yet</p>
+                            <p style="margin-top: 8px; font-size: 13px;">Click "Add Folder" to start indexing a code repository</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Build a map of folder IDs for showing linked worktrees
+                const folderMap = new Map();
+                for (const folder of data.folders) {
+                    folderMap.set(folder.id, folder);
+                }
+
+                // Count orphaned folders for cleanup button visibility
+                const orphanedCount = data.folders.filter(f => f.isOrphaned).length;
+                const cleanupBtn = document.getElementById('cleanupBtn');
+                if (cleanupBtn) {
+                    cleanupBtn.style.display = orphanedCount > 0 ? 'inline-flex' : 'none';
+                }
+
+                let html = '';
+                for (const folder of data.folders) {
+                    const isIndexing = folder.status === 'indexing';
+                    const isOrphaned = folder.isOrphaned;
+                    const isWorktree = folder.isWorktree;
+                    const hasWorktrees = data.folders.some(f => f.baseRepoId === folder.id);
+                    const progress = folder.progress;
+                    const progressPercent = progress && progress.totalFiles > 0
+                        ? Math.round((progress.processedFiles / progress.totalFiles) * 100)
+                        : 0;
+
+                    // Get base repo name if this is a worktree
+                    let baseRepoName = '';
+                    if (isWorktree && folder.baseRepoId) {
+                        const baseRepo = folderMap.get(folder.baseRepoId);
+                        baseRepoName = baseRepo ? baseRepo.name : 'Unknown';
+                    }
+
+                    // Build badges
+                    let badges = `<span class="badge ${folder.status}">${folder.status}</span>`;
+                    if (isOrphaned) {
+                        badges += ` <span class="badge orphaned">orphaned</span>`;
+                    }
+                    if (isWorktree) {
+                        badges += ` <span class="badge worktree">worktree</span>`;
+                    } else if (hasWorktrees) {
+                        badges += ` <span class="badge base-repo">base repo</span>`;
+                    }
+
+                    html += `
+                        <div class="folder-item ${isOrphaned ? 'orphaned' : ''}" id="folder-${folder.id}">
+                            <div class="folder-item-header">
+                                <div class="folder-item-info">
+                                    <div class="folder-item-name">
+                                        <span>&#128193;</span>
+                                        ${escapeHtml(folder.name)}
+                                        ${badges}
+                                    </div>
+                                    <div class="folder-item-path">${escapeHtml(folder.path)}</div>
+                                    ${isWorktree && baseRepoName ? `<div class="folder-item-meta">Base: ${escapeHtml(baseRepoName)}</div>` : ''}
+                                </div>
+                                <div class="folder-item-actions">
+                                    <button class="reindex-btn" onclick="reindexFolder('${folder.id}')" ${isIndexing || isOrphaned ? 'disabled' : ''}>
+                                        &#8635; Reindex
+                                    </button>
+                                    <button class="remove-btn" onclick="removeFolder('${folder.id}', '${escapeHtml(folder.name)}')" ${isIndexing ? 'disabled' : ''}>
+                                        &#128465; Remove
+                                    </button>
+                                </div>
+                            </div>
+                            ${isIndexing ? `
+                                <div class="progress-bar-container">
+                                    <div class="progress-bar" style="width: ${progressPercent}%"></div>
+                                </div>
+                                <div class="progress-stats">
+                                    <span>${progress?.processedFiles || 0} / ${progress?.totalFiles || 0} files</span>
+                                    <span>${progressPercent}%</span>
+                                </div>
+                            ` : ''}
+                            ${isOrphaned ? `
+                                <div style="color: #f87171; font-size: 12px; margin-top: 8px;">
+                                    &#9888; This folder no longer exists on disk. Click Remove or use Cleanup to delete.
+                                </div>
+                            ` : `
+                                <div class="folder-item-stats">
+                                    <span>&#128196; ${folder.fileCount || 0} files</span>
+                                    <span>&#9888; ${folder.errorCount || 0} errors</span>
+                                    <span>&#128337; ${folder.lastIndexedAt ? formatRelativeTime(folder.lastIndexedAt) : 'Never'}</span>
+                                </div>
+                            `}
+                        </div>
+                    `;
+                }
+
+                content.innerHTML = html;
+            } catch (error) {
+                content.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">&#9888;</div>
+                        <p>Failed to load folders: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        async function cleanupOrphanedFolders() {
+            if (!confirm('Remove all orphaned folders (folders that no longer exist on disk)?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/admin/folders/cleanup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    alert(`Cleaned up ${data.count} orphaned folder(s)`);
+                    refreshFolders();
+                } else {
+                    alert('Failed to cleanup: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to cleanup: ' + error.message);
+            }
+        }
+
+        function showAddFolderModal() {
+            document.getElementById('addFolderModal').style.display = 'flex';
+            document.getElementById('folderPathInput').focus();
+            document.getElementById('addFolderError').style.display = 'none';
+        }
+
+        function hideAddFolderModal() {
+            document.getElementById('addFolderModal').style.display = 'none';
+            document.getElementById('folderPathInput').value = '';
+            document.getElementById('addFolderError').style.display = 'none';
+        }
+
+        async function addFolder() {
+            const pathInput = document.getElementById('folderPathInput');
+            const errorEl = document.getElementById('addFolderError');
+            const btn = document.getElementById('addFolderBtn');
+            const folderPath = pathInput.value.trim();
+
+            if (!folderPath) {
+                errorEl.textContent = 'Please enter a folder path';
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'Adding...';
+            errorEl.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/admin/folders', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: folderPath })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    hideAddFolderModal();
+                    refreshFolders();
+                } else {
+                    errorEl.textContent = data.error || 'Failed to add folder';
+                    errorEl.style.display = 'block';
+                }
+            } catch (error) {
+                errorEl.textContent = error.message;
+                errorEl.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Add & Index';
+            }
+        }
+
+        async function removeFolder(folderId, folderName) {
+            if (!confirm(`Are you sure you want to remove "${folderName}"?\n\nThis will delete all indexed data for this folder.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/folders/${folderId}`, {
+                    method: 'DELETE'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    refreshFolders();
+                } else {
+                    alert('Failed to remove folder: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to remove folder: ' + error.message);
+            }
+        }
+
+        async function reindexFolder(folderId) {
+            if (!confirm('This will clear the index and re-index all files.\n\nThis is useful after upgrading to get new features like parent context enrichment.\n\nContinue?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/folders/${folderId}/reindex`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    refreshFolders();
+                } else {
+                    alert('Failed to start reindex: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed to start reindex: ' + error.message);
+            }
+        }
+
+        // Handle Enter key in add folder modal
+        document.getElementById('folderPathInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                addFolder();
+            }
+        });
+
+        // Close modal on backdrop click
+        document.getElementById('addFolderModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                hideAddFolderModal();
+            }
+        });
+
         // Initial load
+        refreshFolders();
         refreshQueries();
         refreshIngestion();
         checkHealth();
         checkOllamaStatus();
+        checkLspStatus();
+        loadSettings();
+        refreshEmbeddingCache();
         startAutoRefresh();
     </script>
 </body>

@@ -11,12 +11,13 @@ import * as path from "path"
 import { fileURLToPath } from "url"
 import { spawn, ChildProcess } from "child_process"
 import { SystemTray } from "./tray.js"
-import { loadServerConfig, getFolderByPath, getAllFolders } from "./config/store.js"
+import { loadServerConfig, saveServerConfig, getFolderByPath, getAllFolders } from "./config/store.js"
 import { queryLogger } from "./query-logger.js"
 import { createEmbedder, getDefaultModelDimension } from "./embedders/index.js"
 import { QdrantVectorStore } from "./vector-store/qdrant-client.js"
 import { FolderManager } from "./folder-manager/folder-manager.js"
 import { SearchService } from "./search/index.js"
+import type { IVectorStore } from "./types/index.js"
 
 // Tool imports
 import {
@@ -379,6 +380,25 @@ export class CodeSearchServer {
 
 			// Create folder manager
 			const wasmDir = path.join(process.cwd(), "wasm")
+			// Use modelId for embedding cache key (includes provider for uniqueness)
+			const embeddingCacheModelId = config.modelId
+				? `${config.embedderProvider}:${config.modelId}`
+				: config.embedderProvider
+
+			// Configure LSP options
+			const lspOptions = config.lspEnabled
+				? {
+						enabled: true,
+						timeout: config.lspTimeout,
+						maxConcurrentRequests: config.lspMaxConcurrentRequests,
+						useOmniSharp: config.lspUseOmniSharp,
+				  }
+				: undefined
+
+			if (lspOptions) {
+				console.error("[CodeSearch] LSP enrichment enabled")
+			}
+
 			this.folderManager = new FolderManager(embedder, vectorStore, wasmDir, {
 				onStatusChange: (folderId, status) => {
 					console.error(`[CodeSearch] Folder ${folderId} status: ${status}`)
@@ -386,7 +406,7 @@ export class CodeSearchServer {
 				onError: (error) => {
 					console.error(`[CodeSearch] Error: ${error.error}`)
 				},
-			})
+			}, { pollInterval: config.fileWatcherPollInterval }, embeddingCacheModelId, lspOptions)
 			try {
 				await this.folderManager.initialize()
 				console.error("[CodeSearch] Folder manager initialized")
@@ -404,6 +424,11 @@ export class CodeSearchServer {
 			} catch (error) {
 				console.error(`[CodeSearch] WARNING: Could not resume indexing: ${error instanceof Error ? error.message : error}`)
 			}
+
+			// Auto-warm embedding cache in background if needed
+			this.autoWarmCache(vectorStore).catch((error) => {
+				console.error(`[CodeSearch] Cache warming failed: ${error instanceof Error ? error.message : error}`)
+			})
 
 			console.error("[CodeSearch] Server initialized successfully")
 		} catch (error) {
@@ -443,6 +468,7 @@ export class CodeSearchServer {
 
 	private async runSSE(port: number, useTray: boolean): Promise<void> {
 		const app = express()
+		app.use(express.json()) // Parse JSON request bodies
 		let transport: SSEServerTransport | null = null
 		let tray: SystemTray | null = null
 
@@ -589,6 +615,313 @@ export class CodeSearchServer {
 				const folderId = req.query.folderId as string | undefined
 				await queryLogger.clearQueries(folderId)
 				res.json({ success: true })
+			} catch (error) {
+				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - List all folders
+		app.get("/api/admin/folders", async (_req: Request, res: Response) => {
+			try {
+				const folders = await getAllFolders()
+				if (!this.folderManager) {
+					res.json({ folders })
+					return
+				}
+
+				const allStatuses = this.folderManager.getAllStatuses()
+				const foldersWithStatus = folders.map((folder) => {
+					const statusInfo = allStatuses.get(folder.id)
+					return {
+						...folder,
+						status: statusInfo?.status || folder.status,
+						progress: statusInfo?.progress,
+					}
+				})
+
+				res.json({ folders: foldersWithStatus })
+			} catch (error) {
+				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Add a folder
+		app.post("/api/admin/folders", async (req: Request, res: Response) => {
+			try {
+				const { path: folderPath } = req.body
+				if (!folderPath) {
+					res.status(400).json({ success: false, error: "Path is required" })
+					return
+				}
+
+				if (!this.folderManager) {
+					res.status(500).json({ success: false, error: "Server not initialized" })
+					return
+				}
+
+				const folder = await this.folderManager.addFolder(folderPath, true)
+				res.json({ success: true, folder })
+			} catch (error) {
+				res.status(400).json({ success: false, error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Remove a folder
+		app.delete("/api/admin/folders/:id", async (req: Request, res: Response) => {
+			try {
+				const id = req.params.id as string
+				if (!this.folderManager) {
+					res.status(500).json({ success: false, error: "Server not initialized" })
+					return
+				}
+
+				const removed = await this.folderManager.removeFolder(id)
+				if (removed) {
+					res.json({ success: true, folder: removed })
+				} else {
+					res.status(404).json({ success: false, error: "Folder not found" })
+				}
+			} catch (error) {
+				res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Clear and reindex a folder
+		app.post("/api/admin/folders/:id/reindex", async (req: Request, res: Response) => {
+			try {
+				const id = req.params.id as string
+				if (!this.folderManager) {
+					res.status(500).json({ success: false, error: "Server not initialized" })
+					return
+				}
+
+				const indexer = this.folderManager.getFolder(id)
+				if (!indexer) {
+					res.status(404).json({ success: false, error: "Folder not found" })
+					return
+				}
+
+				// Clear and start reindexing in background
+				res.json({ success: true, message: "Reindexing started" })
+
+				// Run reindex in background
+				indexer.clearIndex().then(() => {
+					return this.folderManager!.startIndexing(id)
+				}).catch((error) => {
+					console.error(`[CodeSearch] Reindex failed for ${id}:`, error)
+				})
+			} catch (error) {
+				res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Get folder relationships (worktrees)
+		app.get("/api/admin/folders/relationships", async (_req: Request, res: Response) => {
+			try {
+				if (!this.folderManager) {
+					res.status(400).json({ error: "Server not initialized" })
+					return
+				}
+
+				const relationships = await this.folderManager.getFolderRelationships()
+				const result: Array<{ gitCommonDir: string; baseRepo: any; worktrees: any[] }> = []
+
+				for (const [gitCommonDir, { baseRepo, worktrees }] of relationships) {
+					result.push({
+						gitCommonDir,
+						baseRepo,
+						worktrees,
+					})
+				}
+
+				res.json({ relationships: result })
+			} catch (error) {
+				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Find orphaned folders
+		app.get("/api/admin/folders/orphaned", async (_req: Request, res: Response) => {
+			try {
+				if (!this.folderManager) {
+					res.status(400).json({ error: "Server not initialized" })
+					return
+				}
+
+				const orphaned = await this.folderManager.findOrphanedFolders()
+				res.json({ orphaned })
+			} catch (error) {
+				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Cleanup orphaned folders
+		app.post("/api/admin/folders/cleanup", async (_req: Request, res: Response) => {
+			try {
+				if (!this.folderManager) {
+					res.status(400).json({ success: false, error: "Server not initialized" })
+					return
+				}
+
+				const removed = await this.folderManager.cleanupOrphanedFolders()
+				res.json({
+					success: true,
+					removed: removed.map(f => ({ id: f.id, path: f.path, name: f.name })),
+					count: removed.length,
+				})
+			} catch (error) {
+				res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Validate all folders
+		app.post("/api/admin/folders/validate", async (_req: Request, res: Response) => {
+			try {
+				if (!this.folderManager) {
+					res.status(400).json({ success: false, error: "Server not initialized" })
+					return
+				}
+
+				const { valid, orphaned } = await this.folderManager.validateFolders()
+				res.json({
+					success: true,
+					valid: valid.length,
+					orphaned: orphaned.map(f => ({ id: f.id, path: f.path, name: f.name })),
+				})
+			} catch (error) {
+				res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Get embedding cache stats
+		app.get("/api/admin/embedding-cache", async (_req: Request, res: Response) => {
+			try {
+				if (!this.folderManager) {
+					res.json({ stats: null })
+					return
+				}
+
+				const stats = this.folderManager.getEmbeddingCacheStats()
+				res.json({
+					stats,
+					sizeMB: stats ? (stats.sizeBytes / (1024 * 1024)).toFixed(2) : null,
+				})
+			} catch (error) {
+				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Warm embedding cache from Qdrant
+		let cacheWarmingInProgress = false
+		app.post("/api/admin/embedding-cache/warm", async (_req: Request, res: Response) => {
+			try {
+				if (!this.folderManager) {
+					res.status(400).json({ success: false, error: "Server not initialized" })
+					return
+				}
+
+				if (cacheWarmingInProgress) {
+					res.status(409).json({ success: false, error: "Cache warming already in progress" })
+					return
+				}
+
+				cacheWarmingInProgress = true
+				res.json({ success: true, message: "Cache warming started" })
+
+				// Run in background
+				this.folderManager.warmEmbeddingCache((processed, total) => {
+					// Progress is logged to console
+				}).then((result) => {
+					console.log(`[CacheWarming] Finished: ${result.processed} processed, ${result.cached} cached`)
+					cacheWarmingInProgress = false
+				}).catch((error) => {
+					console.error("[CacheWarming] Failed:", error)
+					cacheWarmingInProgress = false
+				})
+			} catch (error) {
+				cacheWarmingInProgress = false
+				res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Get cache warming status
+		app.get("/api/admin/embedding-cache/warm/status", async (_req: Request, res: Response) => {
+			res.json({ inProgress: cacheWarmingInProgress })
+		})
+
+		// Admin API - Get LSP status
+		app.get("/api/admin/lsp/status", async (_req: Request, res: Response) => {
+			try {
+				const config = await loadServerConfig()
+				if (!config.lspEnabled) {
+					res.json({ enabled: false, servers: {} })
+					return
+				}
+
+				if (!this.folderManager) {
+					res.json({ enabled: true, servers: {}, error: "Server not initialized" })
+					return
+				}
+
+				const statuses = this.folderManager.getLspStatuses()
+				const servers: Record<string, string> = {}
+				if (statuses) {
+					for (const [lang, status] of statuses) {
+						servers[lang] = status
+					}
+				}
+
+				res.json({
+					enabled: true,
+					servers,
+					config: {
+						timeout: config.lspTimeout,
+						maxConcurrentRequests: config.lspMaxConcurrentRequests,
+						useOmniSharp: config.lspUseOmniSharp,
+					},
+				})
+			} catch (error) {
+				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Get settings
+		app.get("/api/admin/settings", async (_req: Request, res: Response) => {
+			try {
+				const config = await loadServerConfig()
+				res.json({
+					fileWatcherPollInterval: config.fileWatcherPollInterval,
+				})
+			} catch (error) {
+				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
+		// Admin API - Update settings
+		app.patch("/api/admin/settings", async (req: Request, res: Response) => {
+			try {
+				const { fileWatcherPollInterval } = req.body
+				const updates: Record<string, unknown> = {}
+
+				if (fileWatcherPollInterval !== undefined) {
+					const interval = Number(fileWatcherPollInterval)
+					if (isNaN(interval) || interval < 50 || interval > 5000) {
+						res.status(400).json({ error: "fileWatcherPollInterval must be between 50 and 5000" })
+						return
+					}
+					updates.fileWatcherPollInterval = interval
+				}
+
+				const newConfig = await saveServerConfig(updates)
+
+				// Update the folder manager with new poll interval
+				if (this.folderManager && updates.fileWatcherPollInterval) {
+					this.folderManager.updateFileWatcherOptions({ pollInterval: newConfig.fileWatcherPollInterval })
+				}
+
+				res.json({
+					fileWatcherPollInterval: newConfig.fileWatcherPollInterval,
+				})
 			} catch (error) {
 				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
 			}
@@ -756,5 +1089,32 @@ export class CodeSearchServer {
 			await this.folderManager.dispose()
 		}
 		await this.server.close()
+	}
+
+	/**
+	 * Auto-warm the embedding cache on startup if Qdrant has more data than the cache
+	 */
+	private async autoWarmCache(vectorStore: QdrantVectorStore): Promise<void> {
+		if (!this.folderManager) return
+
+		try {
+			// Get counts to compare
+			const qdrantCount = await vectorStore.getPointCount()
+			const cacheStats = this.folderManager.getEmbeddingCacheStats()
+			const cacheCount = cacheStats?.modelEntries ?? 0
+
+			// If Qdrant has significantly more points than cache, warm it
+			// Use 90% threshold to account for slight variations
+			if (qdrantCount > 0 && cacheCount < qdrantCount * 0.9) {
+				console.error(`[CodeSearch] Auto-warming cache: Qdrant has ${qdrantCount} points, cache has ${cacheCount}`)
+				const result = await this.folderManager.warmEmbeddingCache()
+				console.error(`[CodeSearch] Cache warming complete: ${result.cached} new embeddings cached`)
+			} else if (qdrantCount > 0) {
+				console.error(`[CodeSearch] Cache already warm: ${cacheCount} embeddings for ${qdrantCount} points`)
+			}
+		} catch (error) {
+			// Non-fatal - just log and continue
+			console.error(`[CodeSearch] Auto cache warming skipped: ${error instanceof Error ? error.message : error}`)
+		}
 	}
 }

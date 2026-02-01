@@ -79,6 +79,13 @@ export interface SearchFilter {
 }
 
 // Code parser types
+export interface ParentContext {
+	className?: string
+	moduleName?: string
+	parentFunction?: string
+	namespace?: string
+}
+
 export interface CodeBlock {
 	file_path: string
 	identifier: string | null
@@ -88,6 +95,8 @@ export interface CodeBlock {
 	content: string
 	segmentHash: string
 	fileHash: string
+	// Parent context for hierarchical code understanding
+	parentContext?: ParentContext
 }
 
 export interface ICodeParser {
@@ -110,6 +119,11 @@ export interface IndexedFolder {
 	fileCount?: number
 	errorCount?: number
 	lastError?: string
+	// Worktree support
+	isWorktree?: boolean
+	baseRepoId?: string       // Links to the base repo's folder ID
+	gitCommonDir?: string     // Path to shared .git directory
+	isOrphaned?: boolean      // True if folder no longer exists on disk
 }
 
 export interface FolderProgress {

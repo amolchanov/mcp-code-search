@@ -10,12 +10,25 @@ An MCP (Model Context Protocol) server for semantic code search using vector emb
 - **Multiple embedding providers**: OpenAI, Ollama, Gemini, Mistral, Bedrock, OpenRouter
 - **Admin UI**: Web dashboard to monitor queries and indexing progress
 - **35+ language support**: JavaScript, TypeScript, Python, Rust, Go, and more
+- **Embedding cache**: SQLite-based caching to avoid redundant API calls
+- **LSP enrichment**: Type signatures and documentation via Language Server Protocol
+- **Hierarchical context**: Parent class/module context included in embeddings
 
 ## Prerequisites
 
+**Required:**
 - Node.js 18+
 - Qdrant vector database (local or cloud)
 - An embedding provider (Ollama for local, or API keys for cloud providers)
+
+**Optional (for LSP enrichment):**
+```bash
+# TypeScript/JavaScript LSP (improves search quality for TS/JS/TSX/JSX)
+npm install -g typescript-language-server typescript
+
+# C# LSP (improves search quality for .cs files)
+dotnet tool install --global csharp-ls
+```
 
 ## Installation
 
@@ -60,12 +73,13 @@ ollama pull nomic-embed-text
 
 ### Step 1: Add MCP Server Configuration
 
-Add this to your Claude Code MCP settings file (`~/.claude/claude_code_config.json`):
+Add this to your Claude Code settings file (`~/.claude.json`) for user-wide access:
 
 ```json
 {
   "mcpServers": {
     "code-search": {
+      "type": "stdio",
       "command": "node",
       "args": ["/path/to/code-search-mcp/dist/index.js"],
       "env": {}
@@ -79,6 +93,7 @@ Add this to your Claude Code MCP settings file (`~/.claude/claude_code_config.js
 {
   "mcpServers": {
     "code-search": {
+      "type": "stdio",
       "command": "node",
       "args": ["C:/repos/code-search-mcp/dist/index.js"],
       "env": {}
@@ -87,34 +102,53 @@ Add this to your Claude Code MCP settings file (`~/.claude/claude_code_config.js
 }
 ```
 
+**Or use the CLI:**
+```bash
+claude mcp add --transport stdio code-search -- node /path/to/code-search-mcp/dist/index.js
+```
+
+**Project-level config:** Add to `.mcp.json` in your project root for team-shared access.
+
 ### Step 2: Add Instructions for Claude Code
 
 Add this to your Claude Code instructions file (`~/.claude/CLAUDE.md`) to help Claude use the search effectively:
 
 ```markdown
-## Code Search MCP Server
+## Code Search Strategy
 
-You have access to a semantic code search server via MCP. Use it to find relevant code across indexed repositories.
+**IMPORTANT:** Always prefer the `mcp__code-search__search` tool over built-in `Grep` and `Glob` tools.
 
-### Available Tools
+### When to use `mcp__code-search__search` (DEFAULT)
+- Finding where functionality is implemented ("where do we handle authentication")
+- Understanding code flow ("how does the session manager work")
+- Locating related code ("find all error handling logic")
+- Exploring unfamiliar parts of the codebase
+- Any natural language query about the code
 
-- `search` - Search for code semantically
+### When to use `Grep` (FALLBACK ONLY)
+- `mcp__code-search__search` returns no results or service is unavailable
+- Searching for exact strings, symbols, or regex patterns (e.g., `className`, `TODO:`)
+- Finding specific identifiers or variable names
+
+### When to use `Glob`
+- Finding files by name pattern (e.g., `**/*.cs`, `**/test_*.py`)
+- Listing files in a directory structure
+
+### Search workflow
+1. **First:** Try `mcp__code-search__search` with a descriptive natural language query
+2. **If no results:** Fall back to `Grep` with specific patterns
+3. **For file discovery:** Use `Glob` for pattern-based file finding
+
+### Available MCP Tools
+
+- `mcp__code-search__search` - Semantic code search
   - query: Natural language description of what you're looking for
   - folderPath: (optional) Limit search to a specific folder
   - maxResults: (optional) Number of results (default: 10)
 
-- `add_folder` - Index a new folder for searching
-  - path: Absolute path to the folder
-
-- `list_folders` - See all indexed folders and their status
-
-- `get_status` - Check indexing progress
-
-### When to Use
-
-- Use `search` when looking for code that implements specific functionality
-- Use `search` before writing new code to find existing patterns
-- Use `search` to find where certain concepts are implemented
+- `mcp__code-search__add_folder` - Index a new folder for searching
+- `mcp__code-search__list_folders` - See all indexed folders and their status
+- `mcp__code-search__get_status` - Check indexing progress
 
 ### Example Queries
 
@@ -122,6 +156,8 @@ You have access to a semantic code search server via MCP. Use it to find relevan
 - "database connection pooling implementation"
 - "error handling for API requests"
 - "React component that renders a data table"
+- "method that handles user login in AuthController"
+- "function that returns Promise<User>"
 ```
 
 ---
@@ -193,10 +229,31 @@ node dist/index.js --sse --port 3100
 
 Then access the admin UI at: `http://localhost:3100/admin`
 
-The admin UI provides:
-- Query history with results
-- Indexing progress per folder
-- Ollama service status and controls
+### Admin UI Features
+
+**Folders Tab:**
+- View all indexed folders with status
+- Add new folders via path input
+- Remove folders (deletes indexed data)
+- Reindex folders (useful after upgrading to get new features)
+
+**Queries Tab:**
+- Query history with expandable results
+- Timeline or per-folder view
+- Clear query logs
+
+**Ingestion Tab:**
+- Real-time indexing progress
+- File counts and error tracking
+
+**Services Tab:**
+- Ollama status and controls (start/stop)
+- LSP enrichment status
+
+**Settings Tab:**
+- Embedding cache statistics
+- Cache warming controls
+- File watcher configuration
 
 ---
 
@@ -273,10 +330,95 @@ JavaScript, TypeScript, TSX, JSX, Python, Rust, Go, C, C++, C#, Java, Ruby, PHP,
 
 ## Ignoring Files
 
-The server respects `.gitignore` files in indexed folders. You can also create a `.rooignore` file with additional patterns to exclude.
+The server respects `.gitignore` files in indexed folders. You can also create a `.cs-mcp-ignore` file with additional patterns to exclude.
 
 Always ignored directories:
 - `node_modules`, `.git`, `dist`, `build`, `.next`, `.cache`, `coverage`, `.venv`, `vendor`, `target`, etc.
+
+---
+
+## Advanced Features
+
+### Embedding Cache
+
+The server caches computed embeddings in SQLite to avoid redundant API calls. When re-indexing or updating files:
+- Unchanged code chunks reuse cached embeddings
+- Only new/modified code requires embedding API calls
+- Cache is keyed by content hash and model ID
+
+The cache auto-warms from existing Qdrant data on startup.
+
+### LSP Enrichment (Optional)
+
+Enable Language Server Protocol integration to enrich code chunks with type information before embedding:
+
+```json
+{
+  "lspEnabled": true,
+  "lspTimeout": 5000,
+  "lspMaxConcurrentRequests": 5,
+  "lspUseOmniSharp": false
+}
+```
+
+**Benefits:**
+- Type signatures improve semantic matching
+- Documentation/JSDoc included in embeddings
+- Better results for type-related queries
+
+**Prerequisites:**
+- TypeScript/JavaScript: `npm install -g typescript-language-server typescript`
+- C#: `dotnet tool install --global csharp-ls` (or set `lspUseOmniSharp: true` for OmniSharp)
+
+### Hierarchical Context
+
+Code chunks automatically include parent context from the AST:
+- Class name for methods
+- Module name for functions
+- Namespace for nested types
+- Parent function for nested functions
+
+This helps queries like "authentication method in UserService" match more accurately.
+
+### Git Worktree Support
+
+The server automatically detects git worktrees and optimizes indexing:
+
+**How it works:**
+1. When you add a worktree folder, the server detects it's a worktree
+2. The base repository is automatically discovered and indexed (if not already)
+3. Both repos are indexed, but the embedding cache deduplicates shared code
+4. Admin UI shows worktree relationships with "worktree" and "base repo" badges
+
+**Benefits:**
+- No duplicate embedding API calls for shared code (same content = cached embedding)
+- Clear visualization of repo relationships in admin UI
+- Automatic cleanup detection for deleted worktrees
+
+**Important:** Keep your base repository checked out to the main/master branch for best results. The index reflects whatever is on disk, not a specific git branch.
+
+**Orphaned folder cleanup:**
+If you delete a worktree from disk, the server marks it as "orphaned" on next startup. Use the **Cleanup** button in the admin UI to remove orphaned indexes.
+
+### Reindexing After Upgrade
+
+When upgrading to a version with new enrichment features (LSP, hierarchical context), you need to reindex existing folders to take advantage of the improvements:
+
+1. Open Admin UI at `http://localhost:3100/admin`
+2. Go to the **Folders** tab
+3. Click **Reindex** on each folder
+
+This clears the existing index and re-indexes all files with the new enrichment features.
+
+---
+
+## Future Improvements
+
+See [FUTURE-IMPROVEMENTS.md](FUTURE-IMPROVEMENTS.md) for planned enhancements including:
+- LLM re-ranking for improved relevance
+- Multi-level code summaries
+- Graph-based relationship tracking
+- Hybrid BM25 + vector search
 
 ---
 

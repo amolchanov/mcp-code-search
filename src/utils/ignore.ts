@@ -76,13 +76,13 @@ export async function createIgnoreFromGitignore(folderPath: string): Promise<Ign
 		// .gitignore doesn't exist, that's fine
 	}
 
-	// Try to read .rooignore if it exists
-	const rooignorePath = path.join(folderPath, ".rooignore")
+	// Try to read .cs-mcp-ignore if it exists
+	const rooignorePath = path.join(folderPath, ".cs-mcp-ignore")
 	try {
 		const content = await fs.readFile(rooignorePath, "utf-8")
 		ig.add(content)
 	} catch {
-		// .rooignore doesn't exist, that's fine
+		// .cs-mcp-ignore doesn't exist, that's fine
 	}
 
 	return ig

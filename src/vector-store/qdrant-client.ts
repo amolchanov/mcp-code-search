@@ -472,4 +472,80 @@ export class QdrantVectorStore implements IVectorStore {
 			throw error
 		}
 	}
+
+	/**
+	 * Scroll through all points in the collection with vectors
+	 * Used for warming the embedding cache from existing data
+	 */
+	async *scrollAllPoints(
+		batchSize: number = 100
+	): AsyncGenerator<Array<{ segmentHash: string; vector: number[] }>> {
+		let offset: string | number | undefined = undefined
+
+		try {
+			while (true) {
+				const result = await this.client.scroll(this.collectionName, {
+					offset,
+					limit: batchSize,
+					with_payload: ["segmentHash"],
+					with_vector: true,
+					filter: {
+						must_not: [{ key: "type", match: { value: "metadata" } }],
+					},
+				})
+
+				if (!result.points || result.points.length === 0) {
+					break
+				}
+
+				const points: Array<{ segmentHash: string; vector: number[] }> = []
+				for (const point of result.points) {
+					const payload = point.payload as Record<string, unknown> | null
+					const segmentHash = payload?.segmentHash as string | undefined
+					const vector = point.vector as number[] | undefined
+
+					if (segmentHash && vector && vector.length > 0) {
+						points.push({ segmentHash, vector })
+					}
+				}
+
+				if (points.length > 0) {
+					yield points
+				}
+
+				// Handle next_page_offset which can be various types
+				const nextOffset = result.next_page_offset
+				if (nextOffset === null || nextOffset === undefined) {
+					break
+				}
+				if (typeof nextOffset === "string" || typeof nextOffset === "number") {
+					offset = nextOffset
+				} else {
+					// Unexpected type, stop iteration
+					break
+				}
+			}
+		} catch (error) {
+			console.error("Failed to scroll points:", error)
+			throw error
+		}
+	}
+
+	/**
+	 * Get total point count (excluding metadata)
+	 */
+	async getPointCount(): Promise<number> {
+		try {
+			const result = await this.client.count(this.collectionName, {
+				filter: {
+					must_not: [{ key: "type", match: { value: "metadata" } }],
+				},
+				exact: true,
+			})
+			return result.count
+		} catch (error) {
+			console.error("Failed to get point count:", error)
+			return 0
+		}
+	}
 }

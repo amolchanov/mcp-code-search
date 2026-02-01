@@ -3,9 +3,14 @@ import * as path from "path"
 import type { IEmbedder, IVectorStore, FolderStatus, FolderProgress, IndexingError, IndexedFolder } from "../types/index.js"
 import { CodeParser } from "../parser/code-parser.js"
 import { FileCacheManager } from "../cache/file-cache.js"
+import { EmbeddingCache } from "../cache/embedding-cache.js"
 import { DirectoryScanner, ScanResult } from "./scanner.js"
-import { FileWatcher } from "./file-watcher.js"
+import { FileWatcher, FileWatcherOptions } from "./file-watcher.js"
 import { updateFolder } from "../config/store.js"
+import type { LSPEnricherOptions, ILSPEnricher } from "../lsp/types.js"
+import { LSPServerManager } from "../lsp/lsp-server-manager.js"
+import { LSPEnricher } from "../lsp/lsp-enricher.js"
+import { LSPCache } from "../lsp/lsp-cache.js"
 
 export interface FolderIndexerCallbacks {
 	onStatusChange?: (folderId: string, status: FolderStatus) => void
@@ -16,23 +21,42 @@ export interface FolderIndexerCallbacks {
 /**
  * Manages indexing for a single folder
  */
+export interface LSPOptions {
+	enabled: boolean
+	timeout?: number
+	maxConcurrentRequests?: number
+	useOmniSharp?: boolean
+}
+
 export class FolderIndexer {
 	private status: FolderStatus = "pending"
 	private fileWatcher: FileWatcher | null = null
 	private cacheManager: FileCacheManager
+	private embeddingCache: EmbeddingCache
 	private codeParser: CodeParser
 	private scanner: DirectoryScanner | null = null
 	private errors: IndexingError[] = []
 	private progress: FolderProgress
+
+	// LSP components
+	private lspServerManager: LSPServerManager | null = null
+	private lspCache: LSPCache | null = null
+	private lspEnricher: ILSPEnricher | null = null
 
 	constructor(
 		private readonly folder: IndexedFolder,
 		private readonly embedder: IEmbedder,
 		private readonly vectorStore: IVectorStore,
 		private readonly wasmDirectory?: string,
-		private readonly callbacks?: FolderIndexerCallbacks
+		private readonly callbacks?: FolderIndexerCallbacks,
+		private readonly fileWatcherOptions?: FileWatcherOptions,
+		private readonly modelId?: string,
+		private readonly lspOptions?: LSPOptions
 	) {
 		this.cacheManager = new FileCacheManager(folder.id)
+		// Use modelId or embedder info for cache key
+		const cacheModelId = modelId || embedder.embedderInfo.name
+		this.embeddingCache = new EmbeddingCache(cacheModelId)
 		this.codeParser = new CodeParser(wasmDirectory)
 		this.progress = {
 			folderId: folder.id,
@@ -63,6 +87,15 @@ export class FolderIndexer {
 		return [...this.errors]
 	}
 
+	get embeddingCacheStats(): { totalEntries: number; modelEntries: number; sizeBytes: number } {
+		return this.embeddingCache.getStats()
+	}
+
+	get lspStatus(): Map<string, string> | null {
+		if (!this.lspEnricher) return null
+		return this.lspEnricher.getStatus()
+	}
+
 	private setStatus(status: FolderStatus): void {
 		this.status = status
 		this.progress.status = status
@@ -90,6 +123,30 @@ export class FolderIndexer {
 
 	async initialize(): Promise<void> {
 		await this.cacheManager.initialize()
+		await this.embeddingCache.initialize()
+
+		// Initialize LSP components if enabled
+		if (this.lspOptions?.enabled) {
+			try {
+				this.lspServerManager = new LSPServerManager({
+					useOmniSharp: this.lspOptions.useOmniSharp,
+				})
+				this.lspCache = new LSPCache()
+				await this.lspCache.initialize()
+				this.lspEnricher = new LSPEnricher(this.lspServerManager, this.lspCache, {
+					enabled: true,
+					timeout: this.lspOptions.timeout,
+					maxConcurrentRequests: this.lspOptions.maxConcurrentRequests,
+				})
+				console.log(`[${this.folder.name}] LSP enrichment enabled`)
+			} catch (error) {
+				console.error(`[${this.folder.name}] Failed to initialize LSP:`, error)
+				// Continue without LSP enrichment
+				this.lspServerManager = null
+				this.lspCache = null
+				this.lspEnricher = null
+			}
+		}
 	}
 
 	async startIndexing(): Promise<ScanResult> {
@@ -107,7 +164,9 @@ export class FolderIndexer {
 				this.embedder,
 				this.vectorStore,
 				this.codeParser,
-				this.cacheManager
+				this.cacheManager,
+				this.embeddingCache,
+				this.lspEnricher ?? undefined
 			)
 
 			const result = await this.scanner.scanDirectory({
@@ -187,7 +246,10 @@ export class FolderIndexer {
 				onError: (error) => {
 					this.addError("", error.message)
 				},
-			}
+			},
+			this.fileWatcherOptions,
+			this.embeddingCache,
+			this.lspEnricher ?? undefined
 		)
 
 		await this.fileWatcher.initialize()
@@ -225,6 +287,18 @@ export class FolderIndexer {
 
 	async dispose(): Promise<void> {
 		await this.stopWatching()
+		this.embeddingCache.close()
+
+		// Shutdown LSP components
+		if (this.lspEnricher) {
+			await this.lspEnricher.shutdown()
+			this.lspEnricher = null
+		}
+		if (this.lspCache) {
+			this.lspCache.close()
+			this.lspCache = null
+		}
+		this.lspServerManager = null
 	}
 }
 

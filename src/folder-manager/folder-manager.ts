@@ -1,6 +1,8 @@
 import * as path from "path"
 import type { IEmbedder, IVectorStore, IndexedFolder, FolderProgress, IndexingError, FolderStatus } from "../types/index.js"
 import { FolderIndexer, generateFolderId, getFolderNameFromPath } from "./folder-indexer.js"
+import type { LSPOptions } from "./folder-indexer.js"
+import type { FileWatcherOptions } from "./file-watcher.js"
 import {
 	addFolder,
 	removeFolder,
@@ -10,6 +12,9 @@ import {
 	getFolderByPath,
 } from "../config/store.js"
 import { isDirectory } from "../utils/fs.js"
+import { EmbeddingCache } from "../cache/embedding-cache.js"
+import { QdrantVectorStore } from "../vector-store/qdrant-client.js"
+import { getWorktreeInfo, folderExists, isSameRepository } from "../utils/git.js"
 
 export interface FolderManagerCallbacks {
 	onFolderAdded?: (folder: IndexedFolder) => void
@@ -30,16 +35,28 @@ export class FolderManager {
 		private readonly embedder: IEmbedder,
 		private readonly vectorStore: IVectorStore,
 		private readonly wasmDirectory?: string,
-		private readonly callbacks?: FolderManagerCallbacks
+		private readonly callbacks?: FolderManagerCallbacks,
+		private fileWatcherOptions?: FileWatcherOptions,
+		private readonly modelId?: string,
+		private readonly lspOptions?: LSPOptions
 	) {}
+
+	updateFileWatcherOptions(options: FileWatcherOptions): void {
+		this.fileWatcherOptions = options
+	}
 
 	async initialize(): Promise<void> {
 		if (this.isInitialized) return
 
-		// Load existing folders from config
-		const folders = await getAllFolders()
+		// Validate folders exist on disk and mark orphaned ones
+		const { valid, orphaned } = await this.validateFolders()
 
-		for (const folder of folders) {
+		if (orphaned.length > 0) {
+			console.log(`[FolderManager] Found ${orphaned.length} orphaned folder(s): ${orphaned.map(f => f.path).join(", ")}`)
+		}
+
+		// Only initialize indexers for valid folders
+		for (const folder of valid) {
 			const indexer = new FolderIndexer(folder, this.embedder, this.vectorStore, this.wasmDirectory, {
 				onStatusChange: (folderId, status) => {
 					this.callbacks?.onStatusChange?.(folderId, status)
@@ -50,7 +67,7 @@ export class FolderManager {
 				onError: (error) => {
 					this.callbacks?.onError?.(error)
 				},
-			})
+			}, this.fileWatcherOptions, this.modelId, this.lspOptions)
 			await indexer.initialize()
 			this.indexers.set(folder.id, indexer)
 		}
@@ -72,12 +89,48 @@ export class FolderManager {
 			throw new Error(`Folder already indexed: ${normalizedPath}`)
 		}
 
+		// Check if this is a git worktree
+		const worktreeInfo = await getWorktreeInfo(normalizedPath)
+		let baseRepoId: string | undefined
+		let baseRepoFolder: IndexedFolder | undefined
+
+		if (worktreeInfo.isWorktree && worktreeInfo.mainRepoPath) {
+			// Check if the base repo is already indexed
+			baseRepoFolder = await getFolderByPath(worktreeInfo.mainRepoPath)
+
+			if (!baseRepoFolder) {
+				// Auto-add the base repo first
+				console.log(`[FolderManager] Detected worktree, auto-adding base repo: ${worktreeInfo.mainRepoPath}`)
+				try {
+					baseRepoFolder = await this.addFolderInternal(worktreeInfo.mainRepoPath, {
+						isWorktree: false,
+						gitCommonDir: worktreeInfo.gitCommonDir,
+					}, startIndexing)
+				} catch (error) {
+					console.warn(`[FolderManager] Failed to auto-add base repo: ${error}`)
+					// Continue without base repo link
+				}
+			} else if (!baseRepoFolder.gitCommonDir && worktreeInfo.gitCommonDir) {
+				// Backfill gitCommonDir on existing base repo
+				console.log(`[FolderManager] Backfilling gitCommonDir on existing base repo: ${baseRepoFolder.path}`)
+				await updateFolder(baseRepoFolder.id, { gitCommonDir: worktreeInfo.gitCommonDir })
+				baseRepoFolder.gitCommonDir = worktreeInfo.gitCommonDir
+			}
+
+			if (baseRepoFolder) {
+				baseRepoId = baseRepoFolder.id
+			}
+		}
+
 		const folder: IndexedFolder = {
 			id: generateFolderId(),
 			path: normalizedPath,
 			name: getFolderNameFromPath(normalizedPath),
 			status: "pending",
 			addedAt: Date.now(),
+			isWorktree: worktreeInfo.isWorktree || undefined,
+			baseRepoId,
+			gitCommonDir: worktreeInfo.gitCommonDir,
 		}
 
 		await addFolder(folder)
@@ -92,7 +145,7 @@ export class FolderManager {
 			onError: (error) => {
 				this.callbacks?.onError?.(error)
 			},
-		})
+		}, this.fileWatcherOptions, this.modelId, this.lspOptions)
 		await indexer.initialize()
 		this.indexers.set(folder.id, indexer)
 
@@ -100,6 +153,63 @@ export class FolderManager {
 
 		if (startIndexing) {
 			// Start indexing in the background
+			this.startIndexing(folder.id).catch(console.error)
+		}
+
+		return folder
+	}
+
+	/**
+	 * Internal method to add a folder with worktree metadata
+	 */
+	private async addFolderInternal(
+		folderPath: string,
+		worktreeMeta: { isWorktree: boolean; gitCommonDir?: string; baseRepoId?: string },
+		startIndexing: boolean
+	): Promise<IndexedFolder> {
+		const normalizedPath = path.normalize(folderPath)
+
+		// Check if path exists and is a directory
+		if (!(await isDirectory(normalizedPath))) {
+			throw new Error(`Path does not exist or is not a directory: ${normalizedPath}`)
+		}
+
+		// Check if already added
+		const existing = await getFolderByPath(normalizedPath)
+		if (existing) {
+			return existing // Return existing instead of error for internal calls
+		}
+
+		const folder: IndexedFolder = {
+			id: generateFolderId(),
+			path: normalizedPath,
+			name: getFolderNameFromPath(normalizedPath),
+			status: "pending",
+			addedAt: Date.now(),
+			isWorktree: worktreeMeta.isWorktree || undefined,
+			baseRepoId: worktreeMeta.baseRepoId,
+			gitCommonDir: worktreeMeta.gitCommonDir,
+		}
+
+		await addFolder(folder)
+
+		const indexer = new FolderIndexer(folder, this.embedder, this.vectorStore, this.wasmDirectory, {
+			onStatusChange: (folderId, status) => {
+				this.callbacks?.onStatusChange?.(folderId, status)
+			},
+			onProgress: (progress) => {
+				this.callbacks?.onProgress?.(progress)
+			},
+			onError: (error) => {
+				this.callbacks?.onError?.(error)
+			},
+		}, this.fileWatcherOptions, this.modelId, this.lspOptions)
+		await indexer.initialize()
+		this.indexers.set(folder.id, indexer)
+
+		this.callbacks?.onFolderAdded?.(folder)
+
+		if (startIndexing) {
 			this.startIndexing(folder.id).catch(console.error)
 		}
 
@@ -250,5 +360,200 @@ export class FolderManager {
 			await indexer.dispose()
 		}
 		this.indexers.clear()
+	}
+
+	/**
+	 * Get all worktrees linked to a base repo
+	 */
+	async getLinkedWorktrees(baseRepoId: string): Promise<IndexedFolder[]> {
+		const folders = await getAllFolders()
+		return folders.filter(f => f.baseRepoId === baseRepoId)
+	}
+
+	/**
+	 * Find orphaned folders (folders that no longer exist on disk)
+	 */
+	async findOrphanedFolders(): Promise<IndexedFolder[]> {
+		const folders = await getAllFolders()
+		const orphaned: IndexedFolder[] = []
+
+		for (const folder of folders) {
+			if (!(await folderExists(folder.path))) {
+				orphaned.push(folder)
+			}
+		}
+
+		return orphaned
+	}
+
+	/**
+	 * Mark folders as orphaned if they no longer exist on disk
+	 */
+	async validateFolders(): Promise<{ valid: IndexedFolder[]; orphaned: IndexedFolder[] }> {
+		const folders = await getAllFolders()
+		const valid: IndexedFolder[] = []
+		const orphaned: IndexedFolder[] = []
+
+		for (const folder of folders) {
+			const exists = await folderExists(folder.path)
+			if (exists) {
+				// Clear orphaned flag if it was set
+				if (folder.isOrphaned) {
+					folder.isOrphaned = false
+					await updateFolder(folder.id, { isOrphaned: false })
+				}
+				valid.push(folder)
+			} else {
+				// Mark as orphaned
+				if (!folder.isOrphaned) {
+					folder.isOrphaned = true
+					await updateFolder(folder.id, { isOrphaned: true })
+				}
+				orphaned.push(folder)
+			}
+		}
+
+		return { valid, orphaned }
+	}
+
+	/**
+	 * Clean up orphaned folders (remove from config and vector store)
+	 */
+	async cleanupOrphanedFolders(): Promise<IndexedFolder[]> {
+		const orphaned = await this.findOrphanedFolders()
+		const removed: IndexedFolder[] = []
+
+		for (const folder of orphaned) {
+			try {
+				await this.removeFolder(folder.id)
+				removed.push(folder)
+				console.log(`[FolderManager] Cleaned up orphaned folder: ${folder.path}`)
+			} catch (error) {
+				console.error(`[FolderManager] Failed to cleanup orphaned folder ${folder.path}:`, error)
+			}
+		}
+
+		return removed
+	}
+
+	/**
+	 * Get folder relationships for display (base repos and their worktrees)
+	 */
+	async getFolderRelationships(): Promise<Map<string, { baseRepo: IndexedFolder; worktrees: IndexedFolder[] }>> {
+		const folders = await getAllFolders()
+		const relationships = new Map<string, { baseRepo: IndexedFolder; worktrees: IndexedFolder[] }>()
+
+		// Normalize path for grouping (case-insensitive on Windows)
+		const normalizeGitDir = (p: string): string => {
+			const normalized = path.normalize(p)
+			return process.platform === "win32" ? normalized.toLowerCase() : normalized
+		}
+
+		// Group by gitCommonDir (case-insensitive on Windows)
+		const byCommonDir = new Map<string, IndexedFolder[]>()
+		for (const folder of folders) {
+			if (folder.gitCommonDir) {
+				const key = normalizeGitDir(folder.gitCommonDir)
+				const existing = byCommonDir.get(key) || []
+				existing.push(folder)
+				byCommonDir.set(key, existing)
+			}
+		}
+
+		// Build relationships
+		for (const [commonDir, relatedFolders] of byCommonDir) {
+			const baseRepo = relatedFolders.find(f => !f.isWorktree)
+			const worktrees = relatedFolders.filter(f => f.isWorktree)
+
+			if (baseRepo) {
+				relationships.set(commonDir, { baseRepo, worktrees })
+			}
+		}
+
+		return relationships
+	}
+
+	/**
+	 * Get embedding cache statistics (shared across all folders for same model)
+	 */
+	getEmbeddingCacheStats(): { totalEntries: number; modelEntries: number; sizeBytes: number } | null {
+		// Get stats from any indexer (they all share the same cache)
+		const indexer = this.indexers.values().next().value
+		if (!indexer) return null
+		return indexer.embeddingCacheStats
+	}
+
+	/**
+	 * Get LSP server statuses (if LSP is enabled)
+	 */
+	getLspStatuses(): Map<string, string> | null {
+		// Get from any indexer that has LSP enabled
+		for (const indexer of this.indexers.values()) {
+			const status = indexer.lspStatus
+			if (status) return status
+		}
+		return null
+	}
+
+	/**
+	 * Warm the embedding cache from existing Qdrant data
+	 * This populates the SQLite cache with embeddings already stored in Qdrant
+	 */
+	async warmEmbeddingCache(
+		onProgress?: (processed: number, total: number) => void
+	): Promise<{ processed: number; cached: number }> {
+		// Check if vectorStore is a QdrantVectorStore with scroll capability
+		if (!(this.vectorStore instanceof QdrantVectorStore)) {
+			throw new Error("Cache warming requires QdrantVectorStore")
+		}
+
+		const qdrantStore = this.vectorStore as QdrantVectorStore
+
+		// Create a temporary embedding cache instance for warming
+		const cacheModelId = this.modelId || this.embedder.embedderInfo.name
+		const embeddingCache = new EmbeddingCache(cacheModelId)
+		await embeddingCache.initialize()
+
+		try {
+			// Get total count for progress
+			const totalPoints = await qdrantStore.getPointCount()
+			let processed = 0
+			let cached = 0
+
+			console.log(`[CacheWarming] Starting cache warm from ${totalPoints} points...`)
+
+			// Scroll through all points
+			for await (const batch of qdrantStore.scrollAllPoints(100)) {
+				const entries: Array<{ segmentHash: string; embedding: number[] }> = []
+
+				for (const point of batch) {
+					// Check if already cached
+					const existing = embeddingCache.getEmbedding(point.segmentHash)
+					if (!existing) {
+						entries.push({
+							segmentHash: point.segmentHash,
+							embedding: point.vector,
+						})
+					}
+				}
+
+				if (entries.length > 0) {
+					embeddingCache.setEmbeddings(entries)
+					cached += entries.length
+				}
+
+				processed += batch.length
+				onProgress?.(processed, totalPoints)
+
+				if (processed % 1000 === 0) {
+					console.log(`[CacheWarming] Processed ${processed}/${totalPoints} points, cached ${cached} new embeddings`)
+				}
+			}
+
+			console.log(`[CacheWarming] Complete: processed ${processed} points, cached ${cached} new embeddings`)
+			return { processed, cached }
+		} finally {
+			embeddingCache.close()
+		}
 	}
 }

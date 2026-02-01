@@ -7,6 +7,8 @@ import { scannerExtensions } from "../parser/supported-extensions.js"
 import { createIgnoreFromGitignore, isPathInIgnoredDirectory } from "../utils/ignore.js"
 import { getRelativePath, getFileSize, readFileContent, fileExists } from "../utils/fs.js"
 import type { Ignore } from "ignore"
+import type { EmbeddingCache } from "../cache/embedding-cache.js"
+import type { ILSPEnricher, EnrichedCodeBlock } from "../lsp/types.js"
 
 const QDRANT_CODE_BLOCK_NAMESPACE = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 const MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024 // 1MB
@@ -21,6 +23,10 @@ export interface FileWatcherCallbacks {
 	onBatchProgress?: (processed: number, total: number, currentFile?: string) => void
 	onBatchComplete?: (results: { success: number; errors: number }) => void
 	onError?: (error: Error) => void
+}
+
+export interface FileWatcherOptions {
+	pollInterval?: number
 }
 
 type EventType = "add" | "change" | "unlink"
@@ -47,7 +53,10 @@ export class FileWatcher {
 		private readonly vectorStore: IVectorStore,
 		private readonly codeParser: ICodeParser,
 		private readonly cacheManager: ICacheManager,
-		private readonly callbacks?: FileWatcherCallbacks
+		private readonly callbacks?: FileWatcherCallbacks,
+		private readonly options?: FileWatcherOptions,
+		private readonly embeddingCache?: EmbeddingCache,
+		private readonly lspEnricher?: ILSPEnricher
 	) {}
 
 	async initialize(): Promise<void> {
@@ -72,6 +81,8 @@ export class FileWatcher {
 			return isPathInIgnoredDirectory(relativePath)
 		}
 
+		const pollInterval = this.options?.pollInterval ?? 100
+
 		this.watcher = chokidar.watch(globPattern, {
 			cwd: this.folderPath,
 			ignored: ignoredFn,
@@ -79,7 +90,7 @@ export class FileWatcher {
 			ignoreInitial: true,
 			awaitWriteFinish: {
 				stabilityThreshold: 300,
-				pollInterval: 100,
+				pollInterval,
 			},
 		})
 
@@ -188,7 +199,73 @@ export class FileWatcher {
 		if (allBlocks.length > 0) {
 			for (let i = 0; i < allBlocks.length; i += BATCH_SEGMENT_THRESHOLD) {
 				const batch = allBlocks.slice(i, i + BATCH_SEGMENT_THRESHOLD)
-				const texts = batch.map(b => b.text)
+
+				// Build enriched content with parent context
+				const buildContextPrefix = (block: CodeBlock): string => {
+					const parts: string[] = []
+					if (block.parentContext) {
+						if (block.parentContext.namespace) {
+							parts.push(`// Namespace: ${block.parentContext.namespace}`)
+						}
+						if (block.parentContext.moduleName) {
+							parts.push(`// Module: ${block.parentContext.moduleName}`)
+						}
+						if (block.parentContext.className) {
+							parts.push(`// Class: ${block.parentContext.className}`)
+						}
+						if (block.parentContext.parentFunction) {
+							parts.push(`// Parent: ${block.parentContext.parentFunction}`)
+						}
+					}
+					return parts.length > 0 ? parts.join("\n") + "\n" : ""
+				}
+
+				// Enrich blocks with LSP data if available
+				let enrichedBatch: Array<{ block: CodeBlock; text: string; filePath: string; fileHash: string; enrichedContent?: string; enrichment?: { typeSignature?: string; documentation?: string } }> = batch.map(item => ({
+					...item,
+					text: buildContextPrefix(item.block) + item.text,
+				}))
+				if (this.lspEnricher) {
+					// Group by file for efficient LSP enrichment
+					const blocksByFile = new Map<string, { indices: number[]; blocks: CodeBlock[] }>()
+					for (let j = 0; j < batch.length; j++) {
+						const filePath = batch[j].filePath
+						if (!blocksByFile.has(filePath)) {
+							blocksByFile.set(filePath, { indices: [], blocks: [] })
+						}
+						blocksByFile.get(filePath)!.indices.push(j)
+						blocksByFile.get(filePath)!.blocks.push(batch[j].block)
+					}
+
+					// Enrich each file's blocks
+					const enrichments = new Map<number, EnrichedCodeBlock>()
+					for (const [filePath, { indices, blocks }] of blocksByFile) {
+						try {
+							const fileEnrichedBlocks = await this.lspEnricher.enrichBlocks(blocks, filePath)
+							for (let j = 0; j < indices.length; j++) {
+								enrichments.set(indices[j], fileEnrichedBlocks[j])
+							}
+						} catch (error) {
+							console.warn(`LSP enrichment failed for ${filePath}:`, error)
+						}
+					}
+
+					// Apply enrichments
+					enrichedBatch = batch.map((item, idx) => {
+						const enriched = enrichments.get(idx)
+						if (enriched) {
+							return {
+								...item,
+								text: enriched.enrichedContent.trim(),
+								enrichedContent: enriched.enrichedContent,
+								enrichment: enriched.enrichment,
+							}
+						}
+						return item
+					})
+				}
+
+				const texts = enrichedBatch.map(b => b.text)
 
 				let attempts = 0
 				let success = false
@@ -197,16 +274,57 @@ export class FileWatcher {
 					attempts++
 					try {
 						// Delete old points for modified files
-						const modifiedFiles = [...new Set(batch.map(b => getRelativePath(b.filePath, this.folderPath)))]
+						const modifiedFiles = [...new Set(enrichedBatch.map(b => getRelativePath(b.filePath, this.folderPath)))]
 						await this.vectorStore.deletePointsByMultipleFilePaths(modifiedFiles, this.folderId)
 
-						// Create embeddings
-						const { embeddings } = await this.embedder.createEmbeddings(texts)
+						// Check embedding cache for existing embeddings
+						const segmentHashes = enrichedBatch.map((b) => b.block.segmentHash)
+						const cachedEmbeddings = this.embeddingCache?.getEmbeddings(segmentHashes) ?? new Map()
+
+						// Separate cached and uncached blocks
+						const uncachedIndices: number[] = []
+						const uncachedTexts: string[] = []
+						for (let j = 0; j < enrichedBatch.length; j++) {
+							if (!cachedEmbeddings.has(enrichedBatch[j].block.segmentHash)) {
+								uncachedIndices.push(j)
+								uncachedTexts.push(texts[j])
+							}
+						}
+
+						// Only call embedder for uncached blocks
+						let newEmbeddings: number[][] = []
+						if (uncachedTexts.length > 0) {
+							const result = await this.embedder.createEmbeddings(uncachedTexts)
+							newEmbeddings = result.embeddings
+
+							// Store new embeddings in cache
+							if (this.embeddingCache) {
+								const cacheEntries = uncachedIndices
+									.map((origIdx, newIdx) => ({
+										segmentHash: enrichedBatch[origIdx].block.segmentHash,
+										embedding: newEmbeddings[newIdx],
+									}))
+									.filter((e) => e.embedding && e.embedding.length > 0)
+								this.embeddingCache.setEmbeddings(cacheEntries)
+							}
+						}
+
+						// Merge cached and new embeddings
+						const allEmbeddings: (number[] | null)[] = enrichedBatch.map((item, idx) => {
+							const cached = cachedEmbeddings.get(item.block.segmentHash)
+							if (cached) return cached
+
+							const uncachedIdx = uncachedIndices.indexOf(idx)
+							if (uncachedIdx !== -1) {
+								return newEmbeddings[uncachedIdx] ?? null
+							}
+							return null
+						})
 
 						// Prepare points, filtering out those with empty embeddings
-						const points = batch
+						const points = enrichedBatch
 							.map((item, idx) => {
-								const embedding = embeddings[idx]
+								const embedding = allEmbeddings[idx]
 								if (!embedding || embedding.length === 0) {
 									return null
 								}
@@ -224,6 +342,13 @@ export class FileWatcher {
 										endLine: item.block.end_line,
 										segmentHash: item.block.segmentHash,
 										folderId: this.folderId,
+										typeSignature: item.enrichment?.typeSignature,
+										documentation: item.enrichment?.documentation,
+										// Include parent context for hierarchical understanding
+										parentClass: item.block.parentContext?.className,
+										parentModule: item.block.parentContext?.moduleName,
+										parentFunction: item.block.parentContext?.parentFunction,
+										namespace: item.block.parentContext?.namespace,
 									},
 								}
 							})
@@ -234,23 +359,28 @@ export class FileWatcher {
 							await this.vectorStore.upsertPoints(points)
 						}
 
+						const cacheHits = enrichedBatch.length - uncachedTexts.length
+						if (cacheHits > 0) {
+							console.log(`[EmbeddingCache] ${cacheHits}/${enrichedBatch.length} cache hits`)
+						}
+
 						// Update cache
 						const processedFiles = new Set<string>()
-						for (const item of batch) {
+						for (const item of enrichedBatch) {
 							if (!processedFiles.has(item.filePath)) {
 								await this.cacheManager.updateHash(item.filePath, item.fileHash)
 								processedFiles.add(item.filePath)
 							}
 						}
 
-						successCount += batch.length
+						successCount += enrichedBatch.length
 						success = true
 					} catch (error) {
 						if (attempts < MAX_BATCH_RETRIES) {
 							await new Promise(resolve => setTimeout(resolve, INITIAL_RETRY_DELAY_MS * Math.pow(2, attempts - 1)))
 						} else {
 							console.error("Failed to process batch after retries:", error)
-							errorCount += batch.length
+							errorCount += enrichedBatch.length
 							this.callbacks?.onError?.(error instanceof Error ? error : new Error(String(error)))
 						}
 					}

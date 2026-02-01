@@ -29,6 +29,12 @@ export const ServerConfigSchema = z.object({
 	searchMinScore: z.number().min(0).max(1).default(0.4),
 	searchMaxResults: z.number().min(1).max(100).default(20),
 	batchSize: z.number().min(1).max(200).default(60),
+	fileWatcherPollInterval: z.number().min(50).max(5000).default(100),
+	// LSP enrichment options
+	lspEnabled: z.boolean().default(true),
+	lspTimeout: z.number().min(1000).max(30000).default(5000),
+	lspMaxConcurrentRequests: z.number().min(1).max(20).default(5),
+	lspUseOmniSharp: z.boolean().default(false),
 })
 
 export const FolderStatusSchema = z.enum(["pending", "indexing", "indexed", "error", "paused"])
@@ -43,6 +49,11 @@ export const IndexedFolderSchema = z.object({
 	fileCount: z.number().optional(),
 	errorCount: z.number().optional(),
 	lastError: z.string().optional(),
+	// Worktree support
+	isWorktree: z.boolean().optional(),
+	baseRepoId: z.string().optional(),      // Links to the base repo's folder ID
+	gitCommonDir: z.string().optional(),    // Path to shared .git directory
+	isOrphaned: z.boolean().optional(),     // True if folder no longer exists on disk
 })
 
 export const FoldersConfigSchema = z.object({

@@ -2,11 +2,44 @@ import { readFile } from "fs/promises"
 import { createHash } from "crypto"
 import * as path from "path"
 import type Parser from "web-tree-sitter"
-import type { CodeBlock, ICodeParser } from "../types/index.js"
+import type { CodeBlock, ICodeParser, ParentContext } from "../types/index.js"
 import { LanguageParser, loadRequiredLanguageParsers } from "./language-parser.js"
 import { scannerExtensions, shouldUseFallbackChunking } from "./supported-extensions.js"
 
 type SyntaxNode = Parser.SyntaxNode
+
+// Node types that represent class-like structures
+const CLASS_LIKE_TYPES = new Set([
+	"class_declaration",
+	"class_definition",
+	"class_specifier",
+	"struct_specifier",
+	"struct_item",
+	"impl_item",
+	"interface_declaration",
+	"trait_item",
+	"enum_item",
+	"contract_declaration",
+])
+
+// Node types that represent module-like structures
+const MODULE_LIKE_TYPES = new Set([
+	"module",
+	"module_definition",
+	"namespace_definition",
+	"package_declaration",
+])
+
+// Node types that represent function-like structures
+const FUNCTION_LIKE_TYPES = new Set([
+	"function_declaration",
+	"function_definition",
+	"method_declaration",
+	"method_definition",
+	"function_item",
+	"arrow_function",
+	"lambda_expression",
+])
 
 // Parser constants
 const MAX_BLOCK_CHARS = 1000
@@ -24,6 +57,80 @@ export class CodeParser implements ICodeParser {
 
 	constructor(wasmDirectory?: string) {
 		this.wasmDirectory = wasmDirectory
+	}
+
+	/**
+	 * Extract parent context by walking up the AST from a node
+	 */
+	private extractParentContext(node: SyntaxNode): ParentContext | undefined {
+		const context: ParentContext = {}
+		let current: SyntaxNode | null = node.parent
+
+		while (current) {
+			const nodeType = current.type
+
+			// Check for class-like parent
+			if (CLASS_LIKE_TYPES.has(nodeType) && !context.className) {
+				const nameNode =
+					current.childForFieldName("name") ||
+					current.children.find(
+						(c) => c?.type === "identifier" || c?.type === "type_identifier"
+					)
+				if (nameNode) {
+					context.className = nameNode.text
+				}
+			}
+
+			// Check for module-like parent
+			if (MODULE_LIKE_TYPES.has(nodeType) && !context.moduleName) {
+				const nameNode =
+					current.childForFieldName("name") ||
+					current.children.find(
+						(c) => c?.type === "identifier" || c?.type === "constant"
+					)
+				if (nameNode) {
+					context.moduleName = nameNode.text
+				}
+			}
+
+			// Check for parent function (for nested functions)
+			if (FUNCTION_LIKE_TYPES.has(nodeType) && !context.parentFunction) {
+				// Only set parent function if we're already inside the captured node
+				// (i.e., the current node is NOT the captured node itself)
+				if (current !== node) {
+					const nameNode =
+						current.childForFieldName("name") ||
+						current.children.find(
+							(c) =>
+								c?.type === "identifier" ||
+								c?.type === "property_identifier" ||
+								c?.type === "field_identifier"
+						)
+					if (nameNode) {
+						context.parentFunction = nameNode.text
+					}
+				}
+			}
+
+			// Check for namespace (C++, C#, TypeScript)
+			if (
+				(nodeType === "namespace_definition" || nodeType === "namespace_declaration") &&
+				!context.namespace
+			) {
+				const nameNode = current.childForFieldName("name")
+				if (nameNode) {
+					context.namespace = nameNode.text
+				}
+			}
+
+			current = current.parent
+		}
+
+		// Only return context if we found something useful
+		if (context.className || context.moduleName || context.parentFunction || context.namespace) {
+			return context
+		}
+		return undefined
 	}
 
 	async parseFile(
@@ -154,6 +261,9 @@ export class CodeParser implements ICodeParser {
 						.update(`${filePath}-${start_line}-${end_line}-${nodeContent.length}-${contentPreview}`)
 						.digest("hex")
 
+					// Extract parent context from AST
+					const parentContext = this.extractParentContext(currentNode)
+
 					if (!seenSegmentHashes.has(segmentHash)) {
 						seenSegmentHashes.add(segmentHash)
 						results.push({
@@ -165,6 +275,7 @@ export class CodeParser implements ICodeParser {
 							content: nodeContent,
 							segmentHash,
 							fileHash,
+							parentContext,
 						})
 					}
 				}

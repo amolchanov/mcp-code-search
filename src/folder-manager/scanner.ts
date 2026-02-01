@@ -6,6 +6,8 @@ import type { IEmbedder, IVectorStore, ICodeParser, ICacheManager, CodeBlock } f
 import { scannerExtensions } from "../parser/supported-extensions.js"
 import { createIgnoreFromGitignore, filterPathsWithIgnore, isPathInIgnoredDirectory } from "../utils/ignore.js"
 import { listFilesRecursively, getRelativePath, getFileSize, readFileContent } from "../utils/fs.js"
+import type { EmbeddingCache } from "../cache/embedding-cache.js"
+import type { ILSPEnricher, EnrichedCodeBlock } from "../lsp/types.js"
 
 const QDRANT_CODE_BLOCK_NAMESPACE = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 const MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024 // 1MB
@@ -43,6 +45,8 @@ export class DirectoryScanner {
 		private readonly vectorStore: IVectorStore,
 		private readonly codeParser: ICodeParser,
 		private readonly cacheManager: ICacheManager,
+		private readonly embeddingCache?: EmbeddingCache,
+		private readonly lspEnricher?: ILSPEnricher,
 		batchSegmentThreshold?: number
 	) {
 		this.batchSegmentThreshold = batchSegmentThreshold || BATCH_SEGMENT_THRESHOLD
@@ -215,13 +219,109 @@ export class DirectoryScanner {
 					await this.vectorStore.deletePointsByMultipleFilePaths(modifiedFilePaths, this.folderId)
 				}
 
-				// Create embeddings
-				const { embeddings } = await this.embedder.createEmbeddings(batchTexts)
+				// Build enriched content with parent context
+				const buildContextPrefix = (block: CodeBlock): string => {
+					const parts: string[] = []
+					if (block.parentContext) {
+						if (block.parentContext.namespace) {
+							parts.push(`// Namespace: ${block.parentContext.namespace}`)
+						}
+						if (block.parentContext.moduleName) {
+							parts.push(`// Module: ${block.parentContext.moduleName}`)
+						}
+						if (block.parentContext.className) {
+							parts.push(`// Class: ${block.parentContext.className}`)
+						}
+						if (block.parentContext.parentFunction) {
+							parts.push(`// Parent: ${block.parentContext.parentFunction}`)
+						}
+					}
+					return parts.length > 0 ? parts.join("\n") + "\n" : ""
+				}
+
+				// Enrich blocks with LSP data (if enricher available)
+				let enrichedBlocks: EnrichedCodeBlock[] = batchBlocks.map((block) => ({
+					...block,
+					enrichedContent: buildContextPrefix(block) + block.content,
+				}))
+
+				if (this.lspEnricher) {
+					// Group blocks by file for efficient LSP enrichment
+					const blocksByFile = new Map<string, { indices: number[]; blocks: CodeBlock[] }>()
+					for (let i = 0; i < batchBlocks.length; i++) {
+						const filePath = batchBlocks[i].file_path
+						if (!blocksByFile.has(filePath)) {
+							blocksByFile.set(filePath, { indices: [], blocks: [] })
+						}
+						blocksByFile.get(filePath)!.indices.push(i)
+						blocksByFile.get(filePath)!.blocks.push(batchBlocks[i])
+					}
+
+					// Enrich each file's blocks
+					for (const [filePath, { indices, blocks }] of blocksByFile) {
+						try {
+							const fileEnrichedBlocks = await this.lspEnricher.enrichBlocks(blocks, filePath)
+							for (let j = 0; j < indices.length; j++) {
+								enrichedBlocks[indices[j]] = fileEnrichedBlocks[j]
+							}
+						} catch (error) {
+							// LSP enrichment failed - continue with unenriched blocks
+							console.warn(`LSP enrichment failed for ${filePath}:`, error)
+						}
+					}
+				}
+
+				// Use enrichedContent for embedding (includes type signatures and docs)
+				const textsForEmbedding = enrichedBlocks.map((b) => b.enrichedContent.trim())
+
+				// Check embedding cache for existing embeddings
+				const segmentHashes = batchBlocks.map((b) => b.segmentHash)
+				const cachedEmbeddings = this.embeddingCache?.getEmbeddings(segmentHashes) ?? new Map()
+
+				// Separate cached and uncached blocks
+				const uncachedIndices: number[] = []
+				const uncachedTexts: string[] = []
+				for (let i = 0; i < batchBlocks.length; i++) {
+					if (!cachedEmbeddings.has(batchBlocks[i].segmentHash)) {
+						uncachedIndices.push(i)
+						uncachedTexts.push(textsForEmbedding[i])
+					}
+				}
+
+				// Only call embedder for uncached blocks
+				let newEmbeddings: number[][] = []
+				if (uncachedTexts.length > 0) {
+					const result = await this.embedder.createEmbeddings(uncachedTexts)
+					newEmbeddings = result.embeddings
+
+					// Store new embeddings in cache
+					if (this.embeddingCache) {
+						const cacheEntries = uncachedIndices
+							.map((origIdx, newIdx) => ({
+								segmentHash: batchBlocks[origIdx].segmentHash,
+								embedding: newEmbeddings[newIdx],
+							}))
+							.filter((e) => e.embedding && e.embedding.length > 0)
+						this.embeddingCache.setEmbeddings(cacheEntries)
+					}
+				}
+
+				// Merge cached and new embeddings
+				const allEmbeddings: (number[] | null)[] = batchBlocks.map((block, idx) => {
+					const cached = cachedEmbeddings.get(block.segmentHash)
+					if (cached) return cached
+
+					const uncachedIdx = uncachedIndices.indexOf(idx)
+					if (uncachedIdx !== -1) {
+						return newEmbeddings[uncachedIdx] ?? null
+					}
+					return null
+				})
 
 				// Prepare points for Qdrant, filtering out those with empty embeddings
-				const points = batchBlocks
+				const points = enrichedBlocks
 					.map((block, index) => {
-						const embedding = embeddings[index]
+						const embedding = allEmbeddings[index]
 						// Skip blocks with empty or missing embeddings
 						if (!embedding || embedding.length === 0) {
 							console.warn(`Skipping block at index ${index} - no embedding generated`)
@@ -241,6 +341,14 @@ export class DirectoryScanner {
 								endLine: block.end_line,
 								segmentHash: block.segmentHash,
 								folderId: this.folderId,
+								// Include enrichment data if available
+								typeSignature: block.enrichment?.typeSignature,
+								documentation: block.enrichment?.documentation,
+								// Include parent context for hierarchical understanding
+								parentClass: block.parentContext?.className,
+								parentModule: block.parentContext?.moduleName,
+								parentFunction: block.parentContext?.parentFunction,
+								namespace: block.parentContext?.namespace,
 							},
 						}
 					})
@@ -249,6 +357,11 @@ export class DirectoryScanner {
 				// Upsert points (only if we have valid points)
 				if (points.length > 0) {
 					await this.vectorStore.upsertPoints(points)
+				}
+
+				const cacheHits = batchBlocks.length - uncachedTexts.length
+				if (cacheHits > 0) {
+					console.log(`[EmbeddingCache] ${cacheHits}/${batchBlocks.length} cache hits`)
 				}
 				callbacks?.onBlocksIndexed?.(batchBlocks.length)
 

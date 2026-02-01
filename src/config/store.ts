@@ -71,7 +71,8 @@ export async function saveFoldersConfig(config: FoldersConfigOutput): Promise<vo
  */
 export async function addFolder(folder: IndexedFolderOutput): Promise<void> {
 	const config = await loadFoldersConfig()
-	const existing = config.folders.find((f) => f.path === folder.path)
+	const normalizedPath = normalizePathForComparison(folder.path)
+	const existing = config.folders.find((f) => normalizePathForComparison(f.path) === normalizedPath)
 	if (existing) {
 		throw new Error(`Folder already indexed: ${folder.path}`)
 	}
@@ -116,12 +117,21 @@ export async function getFolder(folderId: string): Promise<IndexedFolderOutput |
 }
 
 /**
+ * Normalize path for comparison (case-insensitive on Windows)
+ */
+function normalizePathForComparison(p: string): string {
+	const normalized = path.normalize(p)
+	// Windows paths are case-insensitive
+	return process.platform === "win32" ? normalized.toLowerCase() : normalized
+}
+
+/**
  * Get a folder by path
  */
 export async function getFolderByPath(folderPath: string): Promise<IndexedFolderOutput | undefined> {
 	const config = await loadFoldersConfig()
-	const normalizedPath = path.normalize(folderPath)
-	return config.folders.find((f) => path.normalize(f.path) === normalizedPath)
+	const normalizedPath = normalizePathForComparison(folderPath)
+	return config.folders.find((f) => normalizePathForComparison(f.path) === normalizedPath)
 }
 
 /**
