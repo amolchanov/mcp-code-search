@@ -111,54 +111,22 @@ claude mcp add --transport stdio code-search -- node /path/to/code-search-mcp/di
 
 ### Step 2: Add Instructions for Claude Code
 
-Add this to your Claude Code instructions file (`~/.claude/CLAUDE.md`) to help Claude use the search effectively:
+Copy the example instructions to your Claude Code instructions file to help Claude use the search effectively:
 
-```markdown
-## Code Search Strategy
+```bash
+# Copy to global instructions
+cp examples/CLAUDE.md ~/.claude/CLAUDE.md
 
-**IMPORTANT:** Always prefer the `mcp__code-search__search` tool over built-in `Grep` and `Glob` tools.
-
-### When to use `mcp__code-search__search` (DEFAULT)
-- Finding where functionality is implemented ("where do we handle authentication")
-- Understanding code flow ("how does the session manager work")
-- Locating related code ("find all error handling logic")
-- Exploring unfamiliar parts of the codebase
-- Any natural language query about the code
-
-### When to use `Grep` (FALLBACK ONLY)
-- `mcp__code-search__search` returns no results or service is unavailable
-- Searching for exact strings, symbols, or regex patterns (e.g., `className`, `TODO:`)
-- Finding specific identifiers or variable names
-
-### When to use `Glob`
-- Finding files by name pattern (e.g., `**/*.cs`, `**/test_*.py`)
-- Listing files in a directory structure
-
-### Search workflow
-1. **First:** Try `mcp__code-search__search` with a descriptive natural language query
-2. **If no results:** Fall back to `Grep` with specific patterns
-3. **For file discovery:** Use `Glob` for pattern-based file finding
-
-### Available MCP Tools
-
-- `mcp__code-search__search` - Semantic code search
-  - query: Natural language description of what you're looking for
-  - folderPath: (optional) Limit search to a specific folder
-  - maxResults: (optional) Number of results (default: 10)
-
-- `mcp__code-search__add_folder` - Index a new folder for searching
-- `mcp__code-search__list_folders` - See all indexed folders and their status
-- `mcp__code-search__get_status` - Check indexing progress
-
-### Example Queries
-
-- "authentication middleware that validates JWT tokens"
-- "database connection pooling implementation"
-- "error handling for API requests"
-- "React component that renders a data table"
-- "method that handles user login in AuthController"
-- "function that returns Promise<User>"
+# Or append to existing instructions
+cat examples/CLAUDE.md >> ~/.claude/CLAUDE.md
 ```
+
+See [examples/CLAUDE.md](examples/CLAUDE.md) for the full instructions template.
+
+**Key points:**
+- Prefer `mcp__code-search__search` over built-in `Grep` and `Glob` for finding code
+- Use natural language queries: "authentication middleware that validates JWT tokens"
+- Fall back to `Grep` only for exact string/regex matches
 
 ---
 
