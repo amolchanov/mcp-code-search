@@ -393,6 +393,37 @@ Always ignored directories:
 
 ---
 
+## Data Storage
+
+All server data is stored in a platform-appropriate application data folder:
+
+| Platform | Location |
+|----------|----------|
+| Windows | `%LOCALAPPDATA%\code-search` |
+| macOS | `~/Library/Application Support/code-search` |
+| Linux | `~/.local/share/code-search` (or `$XDG_DATA_HOME/code-search`) |
+
+**Folder contents:**
+
+```
+code-search/
+├── config.json           # Server configuration
+├── folders.json          # Indexed folder registry
+├── embedding-cache.db    # SQLite embedding cache
+├── lsp-cache.db          # LSP enrichment cache
+├── queries/              # Query logs (daily JSONL files)
+│   └── queries-YYYY-MM-DD.jsonl
+└── cache/                # Per-folder file hash cache
+    └── {folder-id}.json
+```
+
+**Notes:**
+- Query logs are automatically cleaned up after 1 day
+- Both stdio (Claude CLI) and SSE (Admin UI) servers share the same data
+- Embedding cache persists across restarts to avoid redundant API calls
+
+---
+
 ## Advanced Features
 
 ### Embedding Cache
