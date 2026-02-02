@@ -17,6 +17,8 @@ import { createEmbedder, getDefaultModelDimension } from "./embedders/index.js"
 import { QdrantVectorStore } from "./vector-store/qdrant-client.js"
 import { FolderManager } from "./folder-manager/folder-manager.js"
 import { SearchService } from "./search/index.js"
+import { ServerManager } from "./client/server-manager.js"
+import { SSEClient } from "./client/sse-client.js"
 import type { IVectorStore } from "./types/index.js"
 
 // Tool imports
@@ -39,8 +41,12 @@ export class CodeSearchServer {
 	private folderManager: FolderManager | null = null
 	private searchService: SearchService | null = null
 	private httpServer: any = null
+	private sseClient: SSEClient | null = null
+	private isClientMode: boolean = false
 
-	constructor() {
+	constructor(clientMode: boolean = false) {
+		this.isClientMode = clientMode
+		
 		this.server = new Server(
 			{
 				name: "code-search",
@@ -424,177 +430,207 @@ The code-search MCP server provides semantic code search using vector embeddings
 		// Handle tool calls
 		this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
 			const { name, arguments: args } = request.params
-
-			try {
-				let result: string
-
-				switch (name) {
-					case "add_folder": {
-						if (!this.folderManager) {
-							result = JSON.stringify({ success: false, error: "Server not initialized" })
-						} else {
-							const parsed = AddFolderSchema.parse(args)
-							result = await addFolder(this.folderManager, parsed)
-						}
-						break
-					}
-
-					case "remove_folder": {
-						if (!this.folderManager) {
-							result = JSON.stringify({ success: false, error: "Server not initialized" })
-						} else {
-							const parsed = RemoveFolderSchema.parse(args)
-							result = await removeFolder(this.folderManager, parsed)
-						}
-						break
-					}
-
-					case "list_folders": {
-						if (!this.folderManager) {
-							result = JSON.stringify({ success: false, error: "Server not initialized" })
-						} else {
-							result = await listFolders(this.folderManager)
-						}
-						break
-					}
-
-					case "clear_index": {
-						if (!this.folderManager) {
-							result = JSON.stringify({ success: false, error: "Server not initialized" })
-						} else {
-							const parsed = ClearIndexSchema.parse(args)
-							result = await clearIndex(this.folderManager, parsed)
-						}
-						break
-					}
-
-					case "search": {
-						if (!this.searchService) {
-							result = JSON.stringify({ success: false, error: "Server not initialized" })
-						} else {
-							const parsed = SearchSchema.parse(args)
-							result = await search(this.searchService, parsed)
-						}
-						break
-					}
-
-					case "get_status": {
-						if (!this.folderManager) {
-							result = JSON.stringify({ success: false, error: "Server not initialized" })
-						} else {
-							const parsed = GetStatusSchema.parse(args)
-							result = await getStatus(this.folderManager, parsed)
-						}
-						break
-					}
-
-					case "get_errors": {
-						if (!this.folderManager) {
-							result = JSON.stringify({ success: false, error: "Server not initialized" })
-						} else {
-							const parsed = GetErrorsSchema.parse(args)
-							result = await getErrors(this.folderManager, parsed)
-						}
-						break
-					}
-
-					case "configure": {
-						const parsed = ConfigureSchema.parse(args)
-						result = await configure(parsed)
-						break
-					}
-
-					case "reindex_folder": {
-						if (!this.folderManager) {
-							result = JSON.stringify({ success: false, error: "Server not initialized" })
-							break
-						}
-						const folderId = await this.resolveFolderId(args?.folderId as string, args?.path as string)
-						if (!folderId) {
-							result = JSON.stringify({ success: false, error: "Folder not found. Provide folderId or path." })
-							break
-						}
-						await this.folderManager.reindex(folderId)
-						result = JSON.stringify({ success: true, message: "Reindexing started" })
-						break
-					}
-
-					case "pause_indexing": {
-						if (!this.folderManager) {
-							result = JSON.stringify({ success: false, error: "Server not initialized" })
-							break
-						}
-						const folderId = await this.resolveFolderId(args?.folderId as string, args?.path as string)
-						if (!folderId) {
-							result = JSON.stringify({ success: false, error: "Folder not found. Provide folderId or path." })
-							break
-						}
-						this.folderManager.pauseIndexing(folderId)
-						result = JSON.stringify({ success: true, message: "Indexing paused" })
-						break
-					}
-
-					case "resume_indexing": {
-						if (!this.folderManager) {
-							result = JSON.stringify({ success: false, error: "Server not initialized" })
-							break
-						}
-						const folderId = await this.resolveFolderId(args?.folderId as string, args?.path as string)
-						if (!folderId) {
-							result = JSON.stringify({ success: false, error: "Folder not found. Provide folderId or path." })
-							break
-						}
-						this.folderManager.resumeFolderIndexing(folderId)
-						result = JSON.stringify({ success: true, message: "Indexing resumed" })
-						break
-					}
-
-					case "reenrich_folder": {
-						if (!this.folderManager) {
-							result = JSON.stringify({ success: false, error: "Server not initialized" })
-							break
-						}
-						const folderId = await this.resolveFolderId(args?.folderId as string, args?.path as string)
-						if (!folderId) {
-							result = JSON.stringify({ success: false, error: "Folder not found. Provide folderId or path." })
-							break
-						}
-						await this.folderManager.reEnrich(folderId)
-						result = JSON.stringify({ success: true, message: "Re-enrichment started" })
-						break
-					}
-
-					case "get_instructions": {
-						const format = (args?.format as string) || "claude"
-						result = this.getInstructionsContent(format)
-						break
-					}
-
-					default:
-						result = JSON.stringify({ success: false, error: `Unknown tool: ${name}` })
-				}
-
-				return {
-					content: [{ type: "text", text: result }],
-				}
-			} catch (error) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: JSON.stringify({
-								success: false,
-								error: error instanceof Error ? error.message : String(error),
-							}),
-						},
-					],
-					isError: true,
-				}
-			}
+			return await this.handleToolCall(name, args)
 		})
 	}
 
-	async initialize(): Promise<void> {
+	// Extract tool handling logic for reuse by both MCP and HTTP endpoints
+	private async handleToolCall(name: string, args: any): Promise<any> {
+		// If in client mode, proxy to SSE server
+		if (this.isClientMode) {
+			if (!this.sseClient) {
+				return {
+					content: [{
+						type: "text",
+						text: JSON.stringify({
+							success: false,
+							error: "Client not yet connected to SSE server"
+						})
+					}],
+					isError: true
+				}
+			}
+			try {
+				return await this.sseClient.callTool(name, args)
+			} catch (error) {
+				return {
+					content: [{
+						type: "text",
+						text: JSON.stringify({
+							success: false,
+							error: `SSE server error: ${error instanceof Error ? error.message : String(error)}`
+						})
+					}],
+					isError: true
+				}
+			}
+		}
+
+		// Server mode: handle locally
+		let result: string
+
+		switch (name) {
+			case "add_folder": {
+				if (!this.folderManager) {
+					result = JSON.stringify({ success: false, error: "Server not initialized" })
+				} else {
+					const parsed = AddFolderSchema.parse(args)
+					result = await addFolder(this.folderManager, parsed)
+				}
+				break
+			}
+
+			case "remove_folder": {
+				if (!this.folderManager) {
+					result = JSON.stringify({ success: false, error: "Server not initialized" })
+				} else {
+					const parsed = RemoveFolderSchema.parse(args)
+					result = await removeFolder(this.folderManager, parsed)
+				}
+				break
+			}
+
+			case "list_folders": {
+				if (!this.folderManager) {
+					result = JSON.stringify({ success: false, error: "Server not initialized" })
+				} else {
+					result = await listFolders(this.folderManager)
+				}
+				break
+			}
+
+			case "clear_index": {
+				if (!this.folderManager) {
+					result = JSON.stringify({ success: false, error: "Server not initialized" })
+				} else {
+					const parsed = ClearIndexSchema.parse(args)
+					result = await clearIndex(this.folderManager, parsed)
+				}
+				break
+			}
+
+			case "search": {
+				if (!this.searchService) {
+					result = JSON.stringify({ success: false, error: "Server not initialized" })
+				} else {
+					const parsed = SearchSchema.parse(args)
+					result = await search(this.searchService, parsed)
+				}
+				break
+			}
+
+			case "get_status": {
+				if (!this.folderManager) {
+					result = JSON.stringify({ success: false, error: "Server not initialized" })
+				} else {
+					const parsed = GetStatusSchema.parse(args)
+					result = await getStatus(this.folderManager, parsed)
+				}
+				break
+			}
+
+			case "get_errors": {
+				if (!this.folderManager) {
+					result = JSON.stringify({ success: false, error: "Server not initialized" })
+				} else {
+					const parsed = GetErrorsSchema.parse(args)
+					result = await getErrors(this.folderManager, parsed)
+				}
+				break
+			}
+
+			case "configure": {
+				const parsed = ConfigureSchema.parse(args)
+				result = await configure(parsed)
+				break
+			}
+
+			case "reindex_folder": {
+				if (!this.folderManager) {
+					result = JSON.stringify({ success: false, error: "Server not initialized" })
+				} else {
+					const folderId = await this.resolveFolderId(args.folderId, args.folderPath)
+					if (!folderId) {
+						result = JSON.stringify({ success: false, error: "Folder not found" })
+					} else {
+						await this.folderManager.reindex(folderId)
+						result = JSON.stringify({ success: true, message: "Reindexing started" })
+					}
+				}
+				break
+			}
+
+			case "get_config": {
+				result = await getConfig()
+				break
+			}
+
+			case "get_instructions": {
+				const format = args?.format || "claude"
+				result = this.getInstructionsContent(format)
+				break
+			}
+
+			default:
+				result = JSON.stringify({ success: false, error: `Unknown tool: ${name}` })
+		}
+
+		return {
+			content: [{ type: "text", text: result }],
+		}
+	}
+
+	private async getToolsList(): Promise<any[]> {
+		// Return the same tools list as in setupHandlers
+		return [
+			{
+				name: "search",
+				description: "Search indexed code using semantic search. Returns relevant code blocks with file paths, line numbers, and similarity scores.",
+			},
+			{
+				name: "add_folder",
+				description: "Add a folder to be indexed for code search. Supports file type filtering and automatic Git integration.",
+			},
+			{
+				name: "remove_folder",
+				description: "Remove a folder from indexing",
+			},
+			{
+				name: "list_folders",
+				description: "List all indexed folders and their status",
+			},
+			{
+				name: "clear_index",
+				description: "Clear the index for a specific folder",
+			},
+			{
+				name: "get_status",
+				description: "Get indexing status and statistics",
+			},
+			{
+				name: "get_errors",
+				description: "Get error reports for indexing failures",
+			},
+			{
+				name: "configure",
+				description: "Configure server settings (Qdrant connection, embedding provider, API keys)",
+			},
+			{
+				name: "get_config",
+				description: "Get current server configuration",
+			},
+			{
+				name: "reindex_folder",
+				description: "Force re-indexing of a specific folder",
+			},
+			{
+				name: "get_instructions",
+				description: "Get instructions for configuring AI assistants (Claude, Copilot) to use code-search effectively.",
+			},
+		]
+	}
+
+	async initialize(adminOnly: boolean = false): Promise<void> {
 		console.error("[CodeSearch] Initializing server...")
 
 		try {
@@ -670,12 +706,16 @@ The code-search MCP server provides semantic code search using vector embeddings
 			// Create search service
 			this.searchService = new SearchService(embedder, vectorStore)
 
-			// Resume indexing for existing folders
-			try {
-				await this.folderManager.resumeIndexing()
-				console.error("[CodeSearch] Resumed indexing for existing folders")
-			} catch (error) {
-				console.error(`[CodeSearch] WARNING: Could not resume indexing: ${error instanceof Error ? error.message : error}`)
+			// Resume indexing for existing folders (skip if admin-only)
+			if (!adminOnly) {
+				try {
+					await this.folderManager.resumeIndexing()
+					console.error("[CodeSearch] Resumed indexing for existing folders")
+				} catch (error) {
+					console.error(`[CodeSearch] WARNING: Could not resume indexing: ${error instanceof Error ? error.message : error}`)
+				}
+			} else {
+				console.error("[CodeSearch] Admin-only mode: skipping indexing resume")
 			}
 
 			// Auto-warm embedding cache in background if needed
@@ -690,8 +730,15 @@ The code-search MCP server provides semantic code search using vector embeddings
 		}
 	}
 
-	async run(mode: "stdio" | "sse" = "stdio", port: number = 3100, useTray: boolean = false, autoIndexPaths: string[] = []): Promise<void> {
-		await this.initialize()
+	async run(mode: "stdio" | "sse" = "stdio", port: number = 3100, useTray: boolean = false, autoIndexPaths: string[] = [], adminOnly: boolean = false): Promise<void> {
+		// stdio mode runs as a lightweight client - skip full initialization
+		if (mode === "stdio") {
+			await this.runStdioClient(port)
+			return
+		}
+
+		// SSE mode runs as the full server
+		await this.initialize(adminOnly)
 
 		// Clean up old query logs on startup
 		try {
@@ -703,8 +750,8 @@ The code-search MCP server provides semantic code search using vector embeddings
 			console.error(`[CodeSearch] Warning: Failed to cleanup query logs: ${error instanceof Error ? error.message : error}`)
 		}
 
-		// Auto-index specified folders
-		if (autoIndexPaths.length > 0 && this.folderManager) {
+		// Auto-index specified folders (skip if admin-only)
+		if (!adminOnly && autoIndexPaths.length > 0 && this.folderManager) {
 			for (const folderPath of autoIndexPaths) {
 				try {
 					const existing = await getFolderByPath(folderPath)
@@ -720,12 +767,37 @@ The code-search MCP server provides semantic code search using vector embeddings
 			}
 		}
 
-		if (mode === "sse") {
-			await this.runSSE(port, useTray)
-		} else {
+		await this.runSSE(port, useTray)
+	}
+
+	private async runStdioClient(port: number): Promise<void> {
+		console.error("[CodeSearch] Starting in stdio client mode...")
+		
+		// Create server manager to ensure SSE server is running
+		const serverManager = new ServerManager({ port, host: "localhost" })
+		
+		try {
+			// This will start the SSE server if not already running
+			await serverManager.ensureRunning()
+			
+			// Set SSE client BEFORE connecting transport
+			this.sseClient = serverManager.getClient()
+			console.error("[CodeSearch] Client mode enabled, proxying to SSE server")
+			
+			// NOW connect the transport - handlers will use sseClient
 			const transport = new StdioServerTransport()
 			await this.server.connect(transport)
-			console.error("[CodeSearch] Server running on stdio")
+			console.error(`[CodeSearch] stdio client connected to SSE server at http://localhost:${port}`)
+		} catch (error) {
+			console.error(`[CodeSearch] Failed to connect to SSE server: ${error instanceof Error ? error.message : error}`)
+			console.error("[CodeSearch] Falling back to standalone stdio mode")
+			
+			// Fall back to standalone mode if SSE server can't be started
+			this.isClientMode = false  // Switch to server mode
+			await this.initialize(false)
+			const transport = new StdioServerTransport()
+			await this.server.connect(transport)
+			console.error("[CodeSearch] Server running on stdio (standalone)")
 		}
 	}
 
@@ -1228,7 +1300,7 @@ The code-search MCP server provides semantic code search using vector embeddings
 					return
 				}
 
-				const stats = this.folderManager.getEmbeddingCacheStats()
+				const stats = await this.folderManager.getEmbeddingCacheStats()
 				res.json({
 					stats,
 					sizeMB: stats ? (stats.sizeBytes / (1024 * 1024)).toFixed(2) : null,
@@ -1519,6 +1591,41 @@ The code-search MCP server provides semantic code search using vector embeddings
 			}
 		}
 
+		// Health check endpoint
+		app.get("/health", (_req: Request, res: Response) => {
+			res.json({ status: "ok", timestamp: Date.now() })
+		})
+
+		// MCP API endpoints for stdio clients
+		app.post("/api/mcp/call-tool", async (req: Request, res: Response) => {
+			try {
+				const { name, arguments: args } = req.body
+
+				// Call the tool handler directly
+				const result = await this.handleToolCall(name, args)
+				res.json(result)
+			} catch (error) {
+				console.error(`[MCP API] Tool call failed:`, error)
+				res.status(500).json({
+					content: [{
+						type: "text",
+						text: `Error: ${error instanceof Error ? error.message : "Unknown error"}`
+					}],
+					isError: true
+				})
+			}
+		})
+
+		app.get("/api/mcp/list-tools", async (_req: Request, res: Response) => {
+			try {
+				const tools = await this.getToolsList()
+				res.json({ tools })
+			} catch (error) {
+				console.error(`[MCP API] List tools failed:`, error)
+				res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" })
+			}
+		})
+
 		return new Promise<void>((resolve, reject) => {
 			this.httpServer = app.listen(port, () => {
 				console.error(`[CodeSearch] Server running on http://localhost:${port}`)
@@ -1556,7 +1663,7 @@ The code-search MCP server provides semantic code search using vector embeddings
 		try {
 			// Get counts to compare
 			const qdrantCount = await vectorStore.getPointCount()
-			const cacheStats = this.folderManager.getEmbeddingCacheStats()
+			const cacheStats = await this.folderManager.getEmbeddingCacheStats()
 			const cacheCount = cacheStats?.modelEntries ?? 0
 
 			// If Qdrant has significantly more points than cache, warm it

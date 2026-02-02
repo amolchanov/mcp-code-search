@@ -85,6 +85,32 @@ node dist/index.js --sse --index /path/to/project
 
 Then open: **http://localhost:3100/admin**
 
+### Mode 3: Running with PM2 (Auto-Restart on Crash)
+
+For production use, run the server with PM2 for automatic restart if it crashes:
+
+```bash
+# Install PM2 globally (one-time)
+npm install -g pm2
+
+# Start the server with PM2
+npm run pm2:start
+
+# View logs
+npm run pm2:logs
+
+# Check status
+npm run pm2:status
+
+# Stop the server
+npm run pm2:stop
+
+# Restart the server
+npm run pm2:restart
+```
+
+PM2 will automatically restart the server if it crashes (up to 10 times). Logs are saved to `logs/output.log` and `logs/error.log`.
+
 ### Command Line Options
 
 | Option | Description |
@@ -94,19 +120,39 @@ Then open: **http://localhost:3100/admin**
 | `--tray` | Show system tray icon (SSE mode only) |
 | `--index <path>` | Auto-index a folder on startup (can be repeated) |
 
-### Running Both Modes
+### Architecture: Single Server Model
 
-You can run both modes simultaneously for different use cases:
+When multiple MCP clients (e.g., multiple Copilot CLI windows) connect simultaneously, the server uses a client-server architecture to prevent database corruption:
 
-```bash
-# Terminal 1: Admin UI for monitoring
-node dist/index.js --sse --port 3100
-
-# Terminal 2: Claude CLI uses stdio mode automatically
-# (configured via 'claude mcp add' command)
+```
+┌─────────────────────────────────────────────────┐
+│          SSE Server (Daemon)                    │
+│  • Handles ALL indexing and database writes     │
+│  • HTTP API at localhost:3100                   │
+│  • Admin UI for monitoring                      │
+└─────────────────────────────────────────────────┘
+                     ↑ HTTP
+         ┌───────────┼───────────┐
+    ┌────┴────┐ ┌────┴────┐ ┌───┴─────┐
+    │  stdio  │ │  stdio  │ │  stdio  │
+    │ client  │ │ client  │ │ client  │
+    └─────────┘ └─────────┘ └─────────┘
+         ↑           ↑           ↑
+    Copilot 1   Copilot 2   Copilot 3
 ```
 
-**Note:** When Claude CLI spawns the server, it runs in stdio mode. The SSE server is independent and can run alongside for admin/monitoring purposes.
+**How it works:**
+- Each stdio instance (spawned by Copilot/Claude CLI) is a lightweight client
+- Clients proxy all tool calls to the central SSE server via HTTP
+- The SSE server auto-starts if not running when a client connects
+- All database writes (SQLite caches, Qdrant) go through the single server
+- This prevents corruption from concurrent writes
+
+**Key benefits:**
+- No database locking issues with multiple CLI windows
+- Single indexing process per repository
+- Shared embedding cache across all clients
+- Consistent state visible in Admin UI
 
 ---
 

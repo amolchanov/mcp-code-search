@@ -6,6 +6,7 @@ import { getFolderByPath } from "../config/store.js"
 export const AddFolderSchema = z.object({
 	path: z.string().describe("Absolute path to the folder to index"),
 	startIndexing: z.boolean().optional().default(true).describe("Whether to start indexing immediately"),
+	includeExtensions: z.array(z.string()).optional().describe("File extensions to index (e.g., ['.ts', '.js']). If not specified, all supported extensions are indexed."),
 })
 
 export const RemoveFolderSchema = z.object({
@@ -27,7 +28,7 @@ export async function addFolder(
 	args: z.infer<typeof AddFolderSchema>
 ): Promise<string> {
 	try {
-		const folder = await manager.addFolder(args.path, args.startIndexing)
+		const folder = await manager.addFolder(args.path, args.startIndexing, args.includeExtensions)
 		return JSON.stringify({
 			success: true,
 			message: `Folder added successfully`,
@@ -36,6 +37,7 @@ export async function addFolder(
 				path: folder.path,
 				name: folder.name,
 				status: folder.status,
+				includeExtensions: folder.includeExtensions,
 			},
 		})
 	} catch (error) {

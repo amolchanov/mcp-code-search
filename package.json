@@ -12,8 +12,15 @@
     "build": "tsc && npm run copy-admin",
     "copy-admin": "node -e \"const fs = require('fs'); fs.mkdirSync('dist/admin', { recursive: true }); fs.copyFileSync('src/admin/index.html', 'dist/admin/index.html');\"",
     "start": "node dist/index.js",
+    "start:sse": "node dist/index.js --sse",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop code-search-mcp",
+    "pm2:restart": "pm2 restart code-search-mcp",
+    "pm2:logs": "pm2 logs code-search-mcp",
+    "pm2:status": "pm2 status",
     "dev": "tsc --watch",
-    "download-wasm": "node scripts/download-wasm.js"
+    "download-wasm": "node scripts/download-wasm.js",
+    "postinstall": "node scripts/check-lsp.js"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.500.0",
@@ -25,6 +32,9 @@
     "express": "^5.2.1",
     "ignore": "^5.3.0",
     "openai": "^4.0.0",
+    "proper-lockfile": "^4.1.2",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7",
     "systray2": "^2.1.4",
     "uuid": "^9.0.0",
     "vscode-jsonrpc": "^8.2.1",
@@ -36,7 +46,11 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
     "@types/node": "^20.0.0",
+    "@types/proper-lockfile": "^4.1.4",
     "@types/uuid": "^9.0.0",
     "typescript": "^5.3.0"
+  },
+  "optionalDependencies": {
+    "typescript-language-server": "^5.1.3"
   }
 }

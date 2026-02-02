@@ -45,6 +45,7 @@ export class FileWatcher {
 	private accumulatedEvents: Map<string, FileEvent> = new Map()
 	private batchTimer: ReturnType<typeof setTimeout> | null = null
 	private isProcessing = false
+	private readonly allowedExtensions: string[]
 
 	constructor(
 		private readonly folderId: string,
@@ -56,14 +57,18 @@ export class FileWatcher {
 		private readonly callbacks?: FileWatcherCallbacks,
 		private readonly options?: FileWatcherOptions,
 		private readonly embeddingCache?: EmbeddingCache,
-		private readonly lspEnricher?: ILSPEnricher
-	) {}
+		private readonly lspEnricher?: ILSPEnricher,
+		includeExtensions?: string[]
+	) {
+		// Use provided extensions or default to all supported
+		this.allowedExtensions = includeExtensions || scannerExtensions
+	}
 
 	async initialize(): Promise<void> {
 		this.ignoreInstance = await createIgnoreFromGitignore(this.folderPath)
 
-		// Build glob pattern for supported extensions
-		const extensionPattern = scannerExtensions.map((ext) => ext.slice(1)).join(",")
+		// Build glob pattern for allowed extensions
+		const extensionPattern = this.allowedExtensions.map((ext) => ext.slice(1)).join(",")
 		const globPattern = `**/*.{${extensionPattern}}`
 
 		// Use ignore instance to filter paths in chokidar
@@ -279,15 +284,23 @@ export class FileWatcher {
 
 						// Check embedding cache for existing embeddings
 						const segmentHashes = enrichedBatch.map((b) => b.block.segmentHash)
-						const cachedEmbeddings = this.embeddingCache?.getEmbeddings(segmentHashes) ?? new Map()
+						const cachedEmbeddings = this.embeddingCache 
+							? await this.embeddingCache.getEmbeddings(segmentHashes) 
+							: new Map<string, number[]>()
 
-						// Separate cached and uncached blocks
+						// Separate cached and uncached blocks, filtering invalid texts
 						const uncachedIndices: number[] = []
 						const uncachedTexts: string[] = []
 						for (let j = 0; j < enrichedBatch.length; j++) {
 							if (!cachedEmbeddings.has(enrichedBatch[j].block.segmentHash)) {
+								const text = texts[j]
+								if (!text || typeof text !== "string" || text.trim() === "") {
+									const block = enrichedBatch[j].block
+									console.warn(`[CodeSearch] Skipping invalid text for ${block.file_path}:${block.start_line} (${block.type})`)
+									continue
+								}
 								uncachedIndices.push(j)
-								uncachedTexts.push(texts[j])
+								uncachedTexts.push(text)
 							}
 						}
 
@@ -305,7 +318,7 @@ export class FileWatcher {
 										embedding: newEmbeddings[newIdx],
 									}))
 									.filter((e) => e.embedding && e.embedding.length > 0)
-								this.embeddingCache.setEmbeddings(cacheEntries)
+								await this.embeddingCache.setEmbeddings(cacheEntries)
 							}
 						}
 

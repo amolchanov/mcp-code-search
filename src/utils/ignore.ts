@@ -56,6 +56,50 @@ export function isPathInIgnoredDirectory(relativePath: string): boolean {
 }
 
 /**
+ * Read .cs-mcp-include file and parse extensions
+ * Returns array of extensions (with leading dot, lowercase)
+ */
+export async function readIncludeFile(folderPath: string): Promise<string[] | null> {
+	const includePath = path.join(folderPath, ".cs-mcp-include")
+	try {
+		const content = await fs.readFile(includePath, "utf-8")
+		// Parse lines, filter comments and empty lines
+		const extensions = content
+			.split(/\r?\n/)
+			.map(line => line.trim())
+			.filter(line => line && !line.startsWith("#"))
+			.map(ext => {
+				// Normalize: ensure leading dot and lowercase
+				const normalized = ext.toLowerCase()
+				return normalized.startsWith('.') ? normalized : `.${normalized}`
+			})
+		
+		return extensions.length > 0 ? extensions : null
+	} catch {
+		// .cs-mcp-include doesn't exist
+		return null
+	}
+}
+
+/**
+ * Merge programmatic includeExtensions with .cs-mcp-include file
+ * Programmatic extensions take precedence if specified
+ */
+export async function resolveIncludeExtensions(
+	folderPath: string,
+	programmaticExtensions?: string[]
+): Promise<string[] | undefined> {
+	// If programmatic extensions specified, use them
+	if (programmaticExtensions && programmaticExtensions.length > 0) {
+		return programmaticExtensions
+	}
+
+	// Otherwise, try to read from .cs-mcp-include file
+	const fileExtensions = await readIncludeFile(folderPath)
+	return fileExtensions || undefined
+}
+
+/**
  * Create an ignore instance from .gitignore file
  */
 export async function createIgnoreFromGitignore(folderPath: string): Promise<Ignore> {

@@ -24,9 +24,12 @@ async function main() {
 	const portIndex = args.indexOf("--port")
 	const port = portIndex !== -1 ? parseInt(args[portIndex + 1], 10) : 3100
 	const useTray = args.includes("--tray")
+	const adminOnly = args.includes("--admin-only")
 	const autoIndexPaths = parseIndexPaths(args)
 
-	const server = new CodeSearchServer()
+	// stdio mode runs as a client to the SSE server
+	const isClientMode = mode === "stdio"
+	const server = new CodeSearchServer(isClientMode)
 
 	// Handle graceful shutdown
 	const shutdown = async () => {
@@ -37,9 +40,19 @@ async function main() {
 
 	process.on("SIGINT", shutdown)
 	process.on("SIGTERM", shutdown)
+	
+	// Handle unhandled errors
+	process.on("unhandledRejection", (reason, promise) => {
+		console.error("[CodeSearch] Unhandled Promise Rejection:", reason)
+		console.error("Promise:", promise)
+	})
+	
+	process.on("uncaughtException", (error) => {
+		console.error("[CodeSearch] Uncaught Exception:", error)
+	})
 
 	try {
-		await server.run(mode, port, useTray, autoIndexPaths)
+		await server.run(mode, port, useTray, autoIndexPaths, adminOnly)
 	} catch (error) {
 		console.error("[CodeSearch] Fatal error:", error)
 		process.exit(1)

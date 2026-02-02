@@ -83,6 +83,8 @@ export const IndexedFolderSchema = z.object({
 	// Per-folder embedding model (undefined = use global default)
 	embeddingModel: z.string().optional(),
 	lastIndexedWithModel: z.string().optional(), // Model used during last indexing
+	// File extension filtering (undefined = index all supported extensions)
+	includeExtensions: z.array(z.string()).optional(),
 })
 
 export const FoldersConfigSchema = z.object({

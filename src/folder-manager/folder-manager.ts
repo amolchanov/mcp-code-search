@@ -15,6 +15,7 @@ import { isDirectory } from "../utils/fs.js"
 import { EmbeddingCache } from "../cache/embedding-cache.js"
 import { QdrantVectorStore } from "../vector-store/qdrant-client.js"
 import { getWorktreeInfo, folderExists, isSameRepository } from "../utils/git.js"
+import { resolveIncludeExtensions } from "../utils/ignore.js"
 
 export interface FolderManagerCallbacks {
 	onFolderAdded?: (folder: IndexedFolder) => void
@@ -80,7 +81,7 @@ export class FolderManager {
 		this.isInitialized = true
 	}
 
-	async addFolder(folderPath: string, startIndexing: boolean = true): Promise<IndexedFolder> {
+	async addFolder(folderPath: string, startIndexing: boolean = true, includeExtensions?: string[]): Promise<IndexedFolder> {
 		const normalizedPath = path.normalize(folderPath)
 
 		// Check if path exists and is a directory
@@ -93,6 +94,15 @@ export class FolderManager {
 		if (existing) {
 			throw new Error(`Folder already indexed: ${normalizedPath}`)
 		}
+
+		// Resolve extensions: programmatic > .cs-mcp-include file > all supported
+		const resolvedExtensions = await resolveIncludeExtensions(normalizedPath, includeExtensions)
+		
+		// Normalize extensions (ensure they start with a dot and are lowercase)
+		const normalizedExtensions = resolvedExtensions?.map(ext => {
+			const normalized = ext.toLowerCase()
+			return normalized.startsWith('.') ? normalized : `.${normalized}`
+		})
 
 		// Check if this is a git worktree
 		const worktreeInfo = await getWorktreeInfo(normalizedPath)
@@ -110,7 +120,7 @@ export class FolderManager {
 					baseRepoFolder = await this.addFolderInternal(worktreeInfo.mainRepoPath, {
 						isWorktree: false,
 						gitCommonDir: worktreeInfo.gitCommonDir,
-					}, startIndexing)
+					}, startIndexing, normalizedExtensions)
 				} catch (error) {
 					console.warn(`[FolderManager] Failed to auto-add base repo: ${error}`)
 					// Continue without base repo link
@@ -136,6 +146,7 @@ export class FolderManager {
 			isWorktree: worktreeInfo.isWorktree || undefined,
 			baseRepoId,
 			gitCommonDir: worktreeInfo.gitCommonDir,
+			includeExtensions: normalizedExtensions,
 		}
 
 		await addFolder(folder)
@@ -170,7 +181,8 @@ export class FolderManager {
 	private async addFolderInternal(
 		folderPath: string,
 		worktreeMeta: { isWorktree: boolean; gitCommonDir?: string; baseRepoId?: string },
-		startIndexing: boolean
+		startIndexing: boolean,
+		includeExtensions?: string[]
 	): Promise<IndexedFolder> {
 		const normalizedPath = path.normalize(folderPath)
 
@@ -194,6 +206,7 @@ export class FolderManager {
 			isWorktree: worktreeMeta.isWorktree || undefined,
 			baseRepoId: worktreeMeta.baseRepoId,
 			gitCommonDir: worktreeMeta.gitCommonDir,
+			includeExtensions,
 		}
 
 		await addFolder(folder)
@@ -541,11 +554,11 @@ export class FolderManager {
 	/**
 	 * Get embedding cache statistics (shared across all folders for same model)
 	 */
-	getEmbeddingCacheStats(): { totalEntries: number; modelEntries: number; sizeBytes: number } | null {
+	async getEmbeddingCacheStats(): Promise<{ totalEntries: number; modelEntries: number; sizeBytes: number } | null> {
 		// Get stats from any indexer (they all share the same cache)
 		const indexer = this.indexers.values().next().value
 		if (!indexer) return null
-		return indexer.embeddingCacheStats
+		return await indexer.getEmbeddingCacheStats()
 	}
 
 	/**

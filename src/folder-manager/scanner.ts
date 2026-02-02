@@ -49,6 +49,7 @@ export interface ScannerCallbacks {
 export class DirectoryScanner {
 	private readonly batchSegmentThreshold: number
 	private readonly parsingConcurrency: number
+	private readonly allowedExtensions: string[]
 
 	constructor(
 		private readonly folderId: string,
@@ -60,10 +61,13 @@ export class DirectoryScanner {
 		private readonly embeddingCache?: EmbeddingCache,
 		private readonly lspEnricher?: ILSPEnricher,
 		batchSegmentThreshold?: number,
-		parsingConcurrency?: number
+		parsingConcurrency?: number,
+		includeExtensions?: string[]
 	) {
 		this.batchSegmentThreshold = batchSegmentThreshold || BATCH_SEGMENT_THRESHOLD
 		this.parsingConcurrency = parsingConcurrency || DEFAULT_PARSING_CONCURRENCY
+		// Use provided extensions or default to all supported
+		this.allowedExtensions = includeExtensions || scannerExtensions
 	}
 
 	async scanDirectory(callbacks?: ScannerCallbacks): Promise<ScanResult> {
@@ -79,9 +83,9 @@ export class DirectoryScanner {
 		const fileDiscoveryStart = Date.now()
 		const ig = await createIgnoreFromGitignore(this.folderPath)
 
-		// Get all files recursively
+		// Get all files recursively with allowed extensions
 		const allFiles = await listFilesRecursively(this.folderPath, {
-			extensions: scannerExtensions,
+			extensions: this.allowedExtensions,
 		})
 
 		// Limit the number of files
@@ -90,6 +94,10 @@ export class DirectoryScanner {
 		// Filter by ignore patterns
 		const allowedFiles = filterPathsWithIgnore(limitedFiles, this.folderPath, ig)
 		fileDiscoveryMs = Date.now() - fileDiscoveryStart
+
+		// Log cache status
+		const cachedFileCount = this.cacheManager.getFileCount()
+		console.log(`[Scanner] Found ${allowedFiles.length} files, cache has ${cachedFileCount} entries`)
 
 		const processedFiles = new Set<string>()
 		let processedCount = 0
@@ -104,29 +112,35 @@ export class DirectoryScanner {
 		// Timing accumulators for this scan (passed to processBatch)
 		const timingAccum = { parsingMs: 0, lspEnrichmentMs: 0, embeddingMs: 0, vectorStoreMs: 0 }
 
-		// Process files with limited concurrency
-		const processFile = async (filePath: string, index: number): Promise<void> => {
+		// Result type for parallel file processing
+		type FileResult = {
+			blocks: CodeBlock[]
+			texts: string[]
+			fileInfo: { filePath: string; fileHash: string; isNew: boolean } | null
+			skipped: boolean
+			parseTimeMs: number
+		}
+
+		// Process a single file and return results (no shared state mutation)
+		const processFileSafe = async (filePath: string, index: number): Promise<FileResult> => {
 			try {
 				callbacks?.onProgress?.(index, allowedFiles.length, filePath)
 
 				// Check file size
 				const fileSize = await getFileSize(filePath)
 				if (fileSize > MAX_FILE_SIZE_BYTES) {
-					skippedCount++
-					return
+					return { blocks: [], texts: [], fileInfo: null, skipped: true, parseTimeMs: 0 }
 				}
 
 				// Read file content
 				const content = await readFileContent(filePath)
 				const currentFileHash = createHash("sha256").update(content).digest("hex")
-				processedFiles.add(filePath)
 
 				// Check against cache
 				const cachedFileHash = this.cacheManager.getHash(filePath)
 				const isNewFile = !cachedFileHash
 				if (cachedFileHash === currentFileHash) {
-					skippedCount++
-					return
+					return { blocks: [], texts: [], fileInfo: null, skipped: true, parseTimeMs: 0 }
 				}
 
 				// Parse file
@@ -135,64 +149,96 @@ export class DirectoryScanner {
 					content,
 					fileHash: currentFileHash,
 				})
-				timingAccum.parsingMs += Date.now() - parseStart
+				const parseTimeMs = Date.now() - parseStart
 				callbacks?.onFileParsed?.(blocks.length)
-				processedCount++
 
-				if (blocks.length > 0) {
-					let addedBlocksFromFile = false
-					for (const block of blocks) {
-						const trimmedContent = block.content.trim()
-						if (trimmedContent) {
-							currentBatchBlocks.push(block)
-							currentBatchTexts.push(trimmedContent)
-							addedBlocksFromFile = true
-
-							// Process batch if threshold reached
-							if (currentBatchBlocks.length >= this.batchSegmentThreshold) {
-								await this.processBatch(
-									currentBatchBlocks,
-									currentBatchTexts,
-									currentBatchFileInfos,
-									callbacks,
-									timingAccum
-								)
-								currentBatchBlocks = []
-								currentBatchTexts = []
-								currentBatchFileInfos = []
-							}
-						}
-					}
-
-					if (addedBlocksFromFile) {
-						totalBlockCount += blocks.length
-						currentBatchFileInfos.push({
-							filePath,
-							fileHash: currentFileHash,
-							isNew: isNewFile,
-						})
-					}
-				} else {
+				if (blocks.length === 0) {
 					// No blocks, but update cache
 					await this.cacheManager.updateHash(filePath, currentFileHash)
+					return { blocks: [], texts: [], fileInfo: null, skipped: false, parseTimeMs }
+				}
+
+				// Filter valid blocks
+				const validBlocks: CodeBlock[] = []
+				const validTexts: string[] = []
+				for (const block of blocks) {
+					const trimmedContent = block.content.trim()
+					if (trimmedContent) {
+						validBlocks.push(block)
+						validTexts.push(trimmedContent)
+					}
+				}
+
+				if (validBlocks.length === 0) {
+					return { blocks: [], texts: [], fileInfo: null, skipped: false, parseTimeMs }
+				}
+
+				return {
+					blocks: validBlocks,
+					texts: validTexts,
+					fileInfo: { filePath, fileHash: currentFileHash, isNew: isNewFile },
+					skipped: false,
+					parseTimeMs,
 				}
 			} catch (error) {
 				console.error(`Error processing file ${filePath}:`, error)
 				callbacks?.onError?.(
 					error instanceof Error ? error : new Error(`Unknown error processing ${filePath}`)
 				)
+				return { blocks: [], texts: [], fileInfo: null, skipped: false, parseTimeMs: 0 }
 			}
 		}
 
-		// Process files in batches with concurrency
+		// Process files in batches with parallelism (safe - no shared state mutation)
 		for (let i = 0; i < allowedFiles.length; i += this.parsingConcurrency) {
 			// Wait while paused
 			while (callbacks?.isPaused?.()) {
 				await new Promise((resolve) => setTimeout(resolve, 500))
 			}
 
+			// Yield to event loop every batch to allow HTTP requests to be processed
+			await new Promise((resolve) => setImmediate(resolve))
+
 			const batch = allowedFiles.slice(i, i + this.parsingConcurrency)
-			await Promise.all(batch.map((file, idx) => processFile(file, i + idx)))
+			
+			// Process files in parallel - each returns its own results
+			const results = await Promise.all(batch.map((file, idx) => processFileSafe(file, i + idx)))
+			
+			// Merge results into batch accumulators (sequential, safe)
+			for (const result of results) {
+				if (result.skipped) {
+					skippedCount++
+					continue
+				}
+				
+				processedCount++
+				timingAccum.parsingMs += result.parseTimeMs
+				
+				if (result.blocks.length > 0) {
+					currentBatchBlocks.push(...result.blocks)
+					currentBatchTexts.push(...result.texts)
+					totalBlockCount += result.blocks.length
+					
+					if (result.fileInfo) {
+						processedFiles.add(result.fileInfo.filePath)
+						currentBatchFileInfos.push(result.fileInfo)
+					}
+					
+					// Process batch if threshold reached
+					if (currentBatchBlocks.length >= this.batchSegmentThreshold) {
+						await this.processBatch(
+							currentBatchBlocks,
+							currentBatchTexts,
+							currentBatchFileInfos,
+							callbacks,
+							timingAccum
+						)
+						currentBatchBlocks = []
+						currentBatchTexts = []
+						currentBatchFileInfos = []
+					}
+				}
+			}
 		}
 
 		// Process remaining batch
@@ -233,6 +279,7 @@ export class DirectoryScanner {
 
 		// Log pipeline stats
 		const pct = (ms: number) => totalMs > 0 ? ((ms / totalMs) * 100).toFixed(1) : '0'
+		console.log(`[Scanner] Completed: ${processedCount} processed, ${skippedCount} skipped (unchanged), ${totalBlockCount} blocks indexed`)
 		console.log(`[PipelineStats] Discovery: ${pct(fileDiscoveryMs)}%, Parsing: ${pct(timingAccum.parsingMs)}%, LSP: ${pct(timingAccum.lspEnrichmentMs)}%, Embedding: ${pct(timingAccum.embeddingMs)}%, VectorStore: ${pct(timingAccum.vectorStoreMs)}%`)
 
 		return {
@@ -318,8 +365,20 @@ export class DirectoryScanner {
 					for (const [filePath, { indices, blocks }] of blocksByFile) {
 						try {
 							const fileEnrichedBlocks = await this.lspEnricher.enrichBlocks(blocks, filePath)
+							// Check array lengths match
+							if (fileEnrichedBlocks.length !== blocks.length) {
+								console.warn(`[LSP] Array length mismatch: got ${fileEnrichedBlocks.length} enriched blocks for ${blocks.length} input blocks (${filePath})`)
+							}
 							for (let j = 0; j < indices.length; j++) {
-								enrichedBlocks[indices[j]] = fileEnrichedBlocks[j]
+								const enriched = fileEnrichedBlocks[j]
+								if (!enriched) {
+									console.warn(`[LSP] Enriched block is undefined at index ${j} for ${filePath}`)
+									continue // Don't overwrite the good initial value
+								}
+								if (!enriched.enrichedContent || enriched.enrichedContent.trim() === '') {
+									console.warn(`[LSP] Empty enrichment from enricher: ${filePath}:${blocks[j]?.start_line} (original: ${blocks[j]?.content?.length} chars)`)
+								}
+								enrichedBlocks[indices[j]] = enriched
 							}
 						} catch (error) {
 							// LSP enrichment failed - continue with unenriched blocks
@@ -330,19 +389,49 @@ export class DirectoryScanner {
 				if (timingAccum) timingAccum.lspEnrichmentMs += Date.now() - lspStart
 
 				// Use enrichedContent for embedding (includes type signatures and docs)
-				const textsForEmbedding = enrichedBlocks.map((b) => b.enrichedContent.trim())
+				// Fall back to original content if enrichment failed
+				const textsForEmbedding = enrichedBlocks.map((b, idx) => {
+					const originalBlock = batchBlocks[idx]
+					
+					// Check for missing enrichedContent
+					if (!b || !b.enrichedContent || typeof b.enrichedContent !== 'string') {
+						if (originalBlock && originalBlock.content && originalBlock.content.trim()) {
+							// Fallback to original content
+							return buildContextPrefix(originalBlock) + originalBlock.content.trim()
+						}
+						return ''
+					}
+					
+					const trimmed = b.enrichedContent.trim()
+					if (!trimmed) {
+						// enrichedContent is whitespace-only, fall back to original with context
+						if (originalBlock && originalBlock.content && originalBlock.content.trim()) {
+							return buildContextPrefix(originalBlock) + originalBlock.content.trim()
+						}
+					}
+					return trimmed
+				})
 
 				// Check embedding cache for existing embeddings
 				const segmentHashes = batchBlocks.map((b) => b.segmentHash)
-				const cachedEmbeddings = this.embeddingCache?.getEmbeddings(segmentHashes) ?? new Map()
+				const cachedEmbeddings = this.embeddingCache 
+					? await this.embeddingCache.getEmbeddings(segmentHashes) 
+					: new Map<string, number[]>()
 
-				// Separate cached and uncached blocks
+				// Separate cached and uncached blocks, filtering invalid texts
 				const uncachedIndices: number[] = []
 				const uncachedTexts: string[] = []
 				for (let i = 0; i < batchBlocks.length; i++) {
 					if (!cachedEmbeddings.has(batchBlocks[i].segmentHash)) {
+						const text = textsForEmbedding[i]
+						if (!text || typeof text !== "string" || text.trim() === "") {
+							const block = batchBlocks[i]
+							const enrichedBlock = enrichedBlocks[i]
+							console.warn(`[CodeSearch] Skipping empty block ${block.file_path}:${block.start_line} (${block.type}, original: ${block.content?.length ?? 0} chars, enriched: ${enrichedBlock?.enrichedContent?.length ?? 0} chars)`)
+							continue
+						}
 						uncachedIndices.push(i)
-						uncachedTexts.push(textsForEmbedding[i])
+						uncachedTexts.push(text)
 					}
 				}
 
@@ -361,7 +450,7 @@ export class DirectoryScanner {
 								embedding: newEmbeddings[newIdx],
 							}))
 							.filter((e) => e.embedding && e.embedding.length > 0)
-						this.embeddingCache.setEmbeddings(cacheEntries)
+						await this.embeddingCache.setEmbeddings(cacheEntries)
 					}
 				}
 				if (timingAccum) timingAccum.embeddingMs += Date.now() - embeddingStart

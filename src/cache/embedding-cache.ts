@@ -1,4 +1,5 @@
-import Database from "better-sqlite3"
+import sqlite3 from "sqlite3"
+import { open, Database } from "sqlite"
 import * as path from "path"
 import * as fs from "fs"
 import { getDataDir } from "../config/store.js"
@@ -6,14 +7,12 @@ import { getDataDir } from "../config/store.js"
 const DB_FILE = "embedding-cache.db"
 
 /**
- * SQLite-based cache for embeddings
+ * SQLite-based cache for embeddings using async sqlite3
  * Stores embeddings by segment hash + model ID to allow reuse across indexing runs
+ * All operations are async and non-blocking.
  */
 export class EmbeddingCache {
-	private db: Database.Database | null = null
-	private getStmt: Database.Statement | null = null
-	private insertStmt: Database.Statement | null = null
-	private getManyStmt: Database.Statement | null = null
+	private db: Database | null = null
 
 	constructor(private readonly modelId: string) {}
 
@@ -29,47 +28,45 @@ export class EmbeddingCache {
 			fs.mkdirSync(dir, { recursive: true })
 		}
 
-		this.db = new Database(dbPath)
+		this.db = await open({
+			filename: dbPath,
+			driver: sqlite3.Database,
+		})
 
 		// Enable WAL mode for better concurrent performance
-		this.db.pragma("journal_mode = WAL")
+		await this.db.run("PRAGMA journal_mode = WAL")
 
 		// Create table
-		this.db.exec(`
+		await this.db.exec(`
 			CREATE TABLE IF NOT EXISTS embeddings (
 				segment_hash TEXT NOT NULL,
 				model_id TEXT NOT NULL,
 				embedding BLOB NOT NULL,
-				created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
 				PRIMARY KEY (segment_hash, model_id)
 			)
 		`)
 
 		// Create index for faster lookups
-		this.db.exec(`
+		await this.db.exec(`
 			CREATE INDEX IF NOT EXISTS idx_embeddings_model
 			ON embeddings(model_id)
 		`)
-
-		// Prepare statements for reuse
-		this.getStmt = this.db.prepare(
-			"SELECT embedding FROM embeddings WHERE segment_hash = ? AND model_id = ?"
-		)
-
-		this.insertStmt = this.db.prepare(
-			"INSERT OR REPLACE INTO embeddings (segment_hash, model_id, embedding) VALUES (?, ?, ?)"
-		)
 	}
 
 	/**
 	 * Get a cached embedding by segment hash
 	 */
-	getEmbedding(segmentHash: string): number[] | null {
-		if (!this.db || !this.getStmt) return null
+	async getEmbedding(segmentHash: string): Promise<number[] | null> {
+		if (!this.db) return null
 
-		const row = this.getStmt.get(segmentHash, this.modelId) as { embedding: Buffer } | undefined
+		const row = await this.db.get<{ embedding: Buffer }>(
+			"SELECT embedding FROM embeddings WHERE segment_hash = ? AND model_id = ?",
+			segmentHash,
+			this.modelId
+		)
+
 		if (!row) return null
-
 		return this.deserializeEmbedding(row.embedding)
 	}
 
@@ -77,18 +74,18 @@ export class EmbeddingCache {
 	 * Get multiple cached embeddings at once
 	 * Returns a map of segmentHash -> embedding (only for cache hits)
 	 */
-	getEmbeddings(segmentHashes: string[]): Map<string, number[]> {
+	async getEmbeddings(segmentHashes: string[]): Promise<Map<string, number[]>> {
 		const result = new Map<string, number[]>()
 		if (!this.db || segmentHashes.length === 0) return result
 
 		// Build dynamic query for batch lookup
 		const placeholders = segmentHashes.map(() => "?").join(",")
-		const stmt = this.db.prepare(
+		const rows = await this.db.all<Array<{ segment_hash: string; embedding: Buffer }>>(
 			`SELECT segment_hash, embedding FROM embeddings
-			 WHERE segment_hash IN (${placeholders}) AND model_id = ?`
+			 WHERE segment_hash IN (${placeholders}) AND model_id = ?`,
+			...segmentHashes,
+			this.modelId
 		)
-
-		const rows = stmt.all(...segmentHashes, this.modelId) as { segment_hash: string; embedding: Buffer }[]
 
 		for (const row of rows) {
 			result.set(row.segment_hash, this.deserializeEmbedding(row.embedding))
@@ -100,68 +97,83 @@ export class EmbeddingCache {
 	/**
 	 * Store an embedding in the cache
 	 */
-	setEmbedding(segmentHash: string, embedding: number[]): void {
-		if (!this.db || !this.insertStmt) return
+	async setEmbedding(segmentHash: string, embedding: number[]): Promise<void> {
+		if (!this.db) return
 
 		const buffer = this.serializeEmbedding(embedding)
-		this.insertStmt.run(segmentHash, this.modelId, buffer)
+		await this.db.run(
+			"INSERT OR REPLACE INTO embeddings (segment_hash, model_id, embedding) VALUES (?, ?, ?)",
+			segmentHash,
+			this.modelId,
+			buffer
+		)
 	}
 
 	/**
-	 * Store multiple embeddings at once (transactional)
+	 * Store multiple embeddings at once (uses transaction for efficiency)
 	 */
-	setEmbeddings(entries: Array<{ segmentHash: string; embedding: number[] }>): void {
-		if (!this.db || !this.insertStmt || entries.length === 0) return
+	async setEmbeddings(entries: Array<{ segmentHash: string; embedding: number[] }>): Promise<void> {
+		if (!this.db || entries.length === 0) return
 
-		const transaction = this.db.transaction(() => {
+		await this.db.run("BEGIN TRANSACTION")
+		try {
 			for (const entry of entries) {
 				const buffer = this.serializeEmbedding(entry.embedding)
-				this.insertStmt!.run(entry.segmentHash, this.modelId, buffer)
+				await this.db.run(
+					"INSERT OR REPLACE INTO embeddings (segment_hash, model_id, embedding) VALUES (?, ?, ?)",
+					entry.segmentHash,
+					this.modelId,
+					buffer
+				)
 			}
-		})
-
-		transaction()
+			await this.db.run("COMMIT")
+		} catch (error) {
+			await this.db.run("ROLLBACK")
+			throw error
+		}
 	}
 
 	/**
 	 * Delete embeddings for specific segment hashes
 	 */
-	deleteEmbeddings(segmentHashes: string[]): void {
+	async deleteEmbeddings(segmentHashes: string[]): Promise<void> {
 		if (!this.db || segmentHashes.length === 0) return
 
 		const placeholders = segmentHashes.map(() => "?").join(",")
-		const stmt = this.db.prepare(
-			`DELETE FROM embeddings WHERE segment_hash IN (${placeholders}) AND model_id = ?`
+		await this.db.run(
+			`DELETE FROM embeddings WHERE segment_hash IN (${placeholders}) AND model_id = ?`,
+			...segmentHashes,
+			this.modelId
 		)
-		stmt.run(...segmentHashes, this.modelId)
 	}
 
 	/**
 	 * Clear all embeddings for the current model
 	 */
-	clearForModel(): void {
+	async clearForModel(): Promise<void> {
 		if (!this.db) return
-		this.db.prepare("DELETE FROM embeddings WHERE model_id = ?").run(this.modelId)
+		await this.db.run("DELETE FROM embeddings WHERE model_id = ?", this.modelId)
 	}
 
 	/**
 	 * Clear all embeddings
 	 */
-	clearAll(): void {
+	async clearAll(): Promise<void> {
 		if (!this.db) return
-		this.db.prepare("DELETE FROM embeddings").run()
+		await this.db.run("DELETE FROM embeddings")
 	}
 
 	/**
 	 * Get cache statistics
 	 */
-	getStats(): { totalEntries: number; modelEntries: number; sizeBytes: number } {
+	async getStats(): Promise<{ totalEntries: number; modelEntries: number; sizeBytes: number }> {
 		if (!this.db) return { totalEntries: 0, modelEntries: 0, sizeBytes: 0 }
 
-		const total = this.db.prepare("SELECT COUNT(*) as count FROM embeddings").get() as { count: number }
-		const model = this.db
-			.prepare("SELECT COUNT(*) as count FROM embeddings WHERE model_id = ?")
-			.get(this.modelId) as { count: number }
+		const total = await this.db.get<{ count: number }>("SELECT COUNT(*) as count FROM embeddings")
+		const model = await this.db.get<{ count: number }>(
+			"SELECT COUNT(*) as count FROM embeddings WHERE model_id = ?",
+			this.modelId
+		)
 
 		const dbPath = path.join(getDataDir(), DB_FILE)
 		let sizeBytes = 0
@@ -172,8 +184,8 @@ export class EmbeddingCache {
 		}
 
 		return {
-			totalEntries: total.count,
-			modelEntries: model.count,
+			totalEntries: total?.count || 0,
+			modelEntries: model?.count || 0,
 			sizeBytes,
 		}
 	}
@@ -181,12 +193,10 @@ export class EmbeddingCache {
 	/**
 	 * Close the database connection
 	 */
-	close(): void {
+	async close(): Promise<void> {
 		if (this.db) {
-			this.db.close()
+			await this.db.close()
 			this.db = null
-			this.getStmt = null
-			this.insertStmt = null
 		}
 	}
 

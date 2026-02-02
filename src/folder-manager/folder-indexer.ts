@@ -99,8 +99,8 @@ export class FolderIndexer {
 		return this.cacheManager.getFileCount()
 	}
 
-	get embeddingCacheStats(): { totalEntries: number; modelEntries: number; sizeBytes: number } {
-		return this.embeddingCache.getStats()
+	async getEmbeddingCacheStats(): Promise<{ totalEntries: number; modelEntries: number; sizeBytes: number }> {
+		return await this.embeddingCache.getStats()
 	}
 
 	get lspStatus(): Map<string, string> | null {
@@ -223,7 +223,8 @@ export class FolderIndexer {
 				this.embeddingCache,
 				this.lspEnricher ?? undefined,
 				undefined, // batchSegmentThreshold - use default
-				this.indexingOptions?.parsingConcurrency
+				this.indexingOptions?.parsingConcurrency,
+				this.folder.includeExtensions
 			)
 
 			const result = await this.scanner.scanDirectory({
@@ -309,7 +310,8 @@ export class FolderIndexer {
 			},
 			this.fileWatcherOptions,
 			this.embeddingCache,
-			this.lspEnricher ?? undefined
+			this.lspEnricher ?? undefined,
+			this.folder.includeExtensions
 		)
 
 		await this.fileWatcher.initialize()
@@ -373,7 +375,8 @@ export class FolderIndexer {
 				this.embeddingCache,
 				this.lspEnricher ?? undefined,
 				undefined,
-				this.indexingOptions?.parsingConcurrency
+				this.indexingOptions?.parsingConcurrency,
+				this.folder.includeExtensions
 			)
 
 			const result = await this.scanner.scanDirectory({

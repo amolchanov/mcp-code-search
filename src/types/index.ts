@@ -128,6 +128,8 @@ export interface IndexedFolder {
 	isOrphaned?: boolean      // True if folder no longer exists on disk
 	// Per-folder settings
 	lspEnabled?: boolean      // Override global LSP setting for this folder
+	embeddingModel?: string   // Per-folder embedding model
+	includeExtensions?: string[]  // File extensions to index (e.g., ['.ts', '.js'])
 }
 
 export interface FolderProgress {
@@ -182,5 +184,6 @@ export interface ICacheManager {
 	updateHash(filePath: string, hash: string): Promise<void>
 	deleteHash(filePath: string): Promise<void>
 	getAllHashes(): Record<string, string>
+	getFileCount(): number
 	clearCacheFile(): Promise<void>
 }

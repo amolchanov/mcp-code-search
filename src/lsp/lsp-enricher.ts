@@ -86,7 +86,7 @@ export class LSPEnricher implements ILSPEnricher {
 
 		// Check cache first
 		const segmentHashes = blocks.map((b) => b.segmentHash)
-		const cachedEnrichments = this.cache.getEnrichments(segmentHashes)
+		const cachedEnrichments = await this.cache.getEnrichments(segmentHashes)
 
 		// Determine which blocks need enrichment
 		const blocksToEnrich: Array<{ index: number; block: CodeBlock }> = []
@@ -169,7 +169,7 @@ export class LSPEnricher implements ILSPEnricher {
 						enrichment: enrichment!,
 					}))
 				if (entries.length > 0) {
-					this.cache.setEnrichments(entries)
+					await this.cache.setEnrichments(entries)
 				}
 			}
 
@@ -285,10 +285,17 @@ export class LSPEnricher implements ILSPEnricher {
 		enrichment: LSPEnrichmentData | undefined
 	): EnrichedCodeBlock {
 		const enrichedContent = this.buildEnrichedContent(block, enrichment)
+		// Ensure we never return empty enrichedContent - fall back to original content
+		const finalContent = enrichedContent && enrichedContent.trim() ? enrichedContent : block.content
+		
+		if (!finalContent || !finalContent.trim()) {
+			console.warn(`[LSPEnricher] toEnrichedBlock returning empty content for ${block.file_path}:${block.start_line} (block.content=${block.content?.length ?? 0}, enrichedContent=${enrichedContent?.length ?? 0})`)
+		}
+		
 		return {
 			...block,
 			enrichment,
-			enrichedContent,
+			enrichedContent: finalContent || "",
 		}
 	}
 
@@ -300,6 +307,12 @@ export class LSPEnricher implements ILSPEnricher {
 		block: CodeBlock,
 		enrichment: LSPEnrichmentData | undefined
 	): string {
+		// Validate block content first
+		if (!block || !block.content) {
+			console.warn(`[LSPEnricher] Block has no content: ${block?.file_path}:${block?.start_line}`)
+			return ""
+		}
+		
 		if (!enrichment) {
 			return block.content
 		}
