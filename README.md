@@ -212,19 +212,72 @@ See [examples/CLAUDE.md](examples/CLAUDE.md) for the full instructions template.
 
 ### Step 1: Add MCP Server Configuration
 
-Add this to your Copilot CLI MCP settings file (`~/.config/github-copilot/config.json` or platform equivalent):
+You can configure the server globally (for all repos) or per-repository:
+
+#### Option A: Global Configuration (All Repositories)
+
+Add this to your global Copilot CLI MCP settings file:
+
+**Location:** `~/.copilot/mcp-config.json` (create if it doesn't exist)
+
+**Windows:** `C:\Users\<username>\.copilot\mcp-config.json`
 
 ```json
 {
   "mcpServers": {
     "code-search": {
+      "type": "local",
       "command": "node",
       "args": ["/path/to/code-search-mcp/dist/index.js"],
-      "env": {}
+      "tools": ["*"]
     }
   }
 }
 ```
+
+**Windows example:**
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "type": "local",
+      "command": "node",
+      "args": ["c:/repos/mcp-code-search/dist/index.js"],
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+#### Option B: Repository-Specific Configuration
+
+Add `.copilot/mcp-config.json` to your repository root:
+
+```bash
+# In your project repository
+mkdir -p .copilot
+touch .copilot/mcp-config.json
+```
+
+Add the same configuration:
+
+```json
+{
+  "mcpServers": {
+    "code-search": {
+      "type": "local",
+      "command": "node",
+      "args": ["/path/to/code-search-mcp/dist/index.js"],
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+**Note:** 
+- Repository-specific config takes precedence over global config
+- Don't commit `.copilot/mcp-config.json` to version control (add to `.gitignore`)
+- If you already have MCP servers configured, add the `code-search` entry to the existing `mcpServers` object
 
 ### Step 2: Add Instructions for Copilot
 
