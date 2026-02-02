@@ -38,6 +38,7 @@ export class CodeSearchServer {
 	private server: Server
 	private folderManager: FolderManager | null = null
 	private searchService: SearchService | null = null
+	private httpServer: any = null
 
 	constructor() {
 		this.server = new Server(
@@ -1518,22 +1519,30 @@ The code-search MCP server provides semantic code search using vector embeddings
 			}
 		}
 
-		app.listen(port, () => {
-			console.error(`[CodeSearch] Server running on http://localhost:${port}`)
-			console.error(`[CodeSearch] SSE endpoint: http://localhost:${port}/sse`)
-			console.error(`[CodeSearch] Admin UI: http://localhost:${port}/admin`)
+		return new Promise<void>((resolve, reject) => {
+			this.httpServer = app.listen(port, () => {
+				console.error(`[CodeSearch] Server running on http://localhost:${port}`)
+				console.error(`[CodeSearch] SSE endpoint: http://localhost:${port}/sse`)
+				console.error(`[CodeSearch] Admin UI: http://localhost:${port}/admin`)
 
-			if (useTray) {
-				tray = new SystemTray(port, { onStop: shutdown })
-				tray.start()
-				console.error("[CodeSearch] System tray icon active")
-			}
+				if (useTray) {
+					tray = new SystemTray(port, { onStop: shutdown })
+					tray.start()
+					console.error("[CodeSearch] System tray icon active")
+				}
+			})
+
+			this.httpServer.on('error', reject)
+			// Never resolve - keep the server running
 		})
 	}
 
 	async shutdown(): Promise<void> {
 		if (this.folderManager) {
 			await this.folderManager.dispose()
+		}
+		if (this.httpServer) {
+			this.httpServer.close()
 		}
 		await this.server.close()
 	}
