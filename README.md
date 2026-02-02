@@ -110,24 +110,119 @@ node dist/index.js --sse --port 3100
 
 ---
 
-## Running Qdrant
+## Setting Up Prerequisites
 
-For local development, run Qdrant using Docker:
+### Installing Docker (Required for Qdrant)
 
+If you don't have Docker installed:
+
+**Windows/macOS:**
+1. Download Docker Desktop from [docker.com](https://www.docker.com/products/docker-desktop/)
+2. Install and start Docker Desktop
+3. Verify installation: `docker --version`
+
+**Linux:**
 ```bash
-docker run -p 6333:6333 qdrant/qdrant
+# Ubuntu/Debian
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER  # Add your user to docker group
+# Log out and back in for group changes to take effect
 ```
 
-Or install Qdrant locally following the [official guide](https://qdrant.tech/documentation/quick-start/).
+### Running Qdrant (Required)
 
-## Running Ollama (Optional)
+Qdrant is the vector database that stores code embeddings. Choose one option:
 
-If using Ollama for embeddings:
+#### Option A: Docker (Recommended)
+
+**Start Qdrant container:**
+```bash
+# Run in foreground (stops when terminal closes)
+docker run -p 6333:6333 qdrant/qdrant
+
+# OR run in background (keeps running)
+docker run -d -p 6333:6333 -v qdrant_storage:/qdrant/storage --name qdrant qdrant/qdrant
+
+# Check if running
+docker ps | grep qdrant
+
+# Stop the container
+docker stop qdrant
+
+# Restart the container
+docker start qdrant
+
+# View logs
+docker logs qdrant
+```
+
+**Verify Qdrant is running:**
+```bash
+curl http://localhost:6333/collections
+# Should return: {"result":{"collections":[]}, ...}
+```
+
+#### Option B: Local Installation
+
+Follow the [Qdrant installation guide](https://qdrant.tech/documentation/quick-start/) for native installation.
+
+### Running Ollama (Optional - for Local Embeddings)
+
+Ollama provides free local embeddings without API costs. Alternatively, you can use OpenAI, Gemini, Mistral, or Bedrock.
+
+#### Option A: Native Installation (Recommended)
+
+**Download and Install:**
+- **Windows/macOS/Linux**: Download from [ollama.ai](https://ollama.ai/download)
+- Follow the installer instructions
+
+**Pull the embedding model:**
+```bash
+# Recommended model for code (8192 token context)
+ollama pull nomic-embed-text
+
+# Verify model is downloaded
+ollama list
+
+# Test the model
+ollama run nomic-embed-text
+```
+
+#### Option B: Docker
 
 ```bash
-# Install Ollama from https://ollama.ai
-# Then pull the embedding model
-ollama pull nomic-embed-text
+# Run Ollama in Docker
+docker run -d -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
+
+# Pull the embedding model
+docker exec ollama ollama pull nomic-embed-text
+
+# Verify
+docker exec ollama ollama list
+```
+
+**Start/Stop Ollama:**
+```bash
+# Native installation - Ollama runs as a service automatically
+# Check status
+curl http://localhost:11434/api/tags
+
+# Docker
+docker start ollama
+docker stop ollama
+```
+
+### Verify Everything is Running
+
+Before starting the MCP server, check:
+
+```bash
+# Check Qdrant
+curl http://localhost:6333/collections
+
+# Check Ollama (if using)
+curl http://localhost:11434/api/tags
 ```
 
 ---
